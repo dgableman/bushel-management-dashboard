@@ -245,14 +245,14 @@ def main():
     st.markdown("---")
     
     # Tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📋 Contracts", "📈 Charts", "📥 Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📋 Contracts", "💰 Settlements", "📈 Charts", "📥 Export"])
     
     with tab1:
         st.subheader("Summary Statistics")
         
-        # Convert to DataFrame for easier manipulation
+        # Contracts summary
         if filtered_contracts:
-            df = pd.DataFrame([{
+            df_contracts = pd.DataFrame([{
                 'Contract': c.contract_number or 'N/A',
                 'Commodity': c.commodity or 'Unknown',
                 'Bushels': c.bushels or 0,
@@ -267,16 +267,47 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.write("**Bushels by Commodity**")
-                if not df.empty:
-                    commodity_totals = df.groupby('Commodity')['Bushels'].sum().sort_values(ascending=False)
+                st.write("**Bushels by Commodity (Contracts)**")
+                if not df_contracts.empty:
+                    commodity_totals = df_contracts.groupby('Commodity')['Bushels'].sum().sort_values(ascending=False)
                     st.bar_chart(commodity_totals)
             
             with col2:
                 st.write("**Contracts by Status**")
-                if not df.empty:
-                    status_counts = df['Status'].value_counts()
+                if not df_contracts.empty:
+                    status_counts = df_contracts['Status'].value_counts()
                     st.bar_chart(status_counts)
+        
+        # Settlements summary
+        filtered_settlements = [s for s in all_settlements if s.status != 'Header']
+        if filtered_settlements:
+            st.markdown("---")
+            st.subheader("Settlements Summary")
+            
+            df_settlements = pd.DataFrame([{
+                'Settlement ID': s.settlement_ID or 'N/A',
+                'Contract #': s.contract_id or 'N/A',
+                'Bushels': s.bushels or 0,
+                'Price': s.price or 0,
+                'Date Delivered': s.date_delivered,
+                'Gross Amount': s.gross_amount or 0,
+                'Net Amount': s.net_amount or 0
+            } for s in filtered_settlements])
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Bushels Delivered by Settlement**")
+                if not df_settlements.empty:
+                    settlement_totals = df_settlements.groupby('Settlement ID')['Bushels'].sum().sort_values(ascending=False)
+                    st.bar_chart(settlement_totals)
+            
+            with col2:
+                st.write("**Settlements Over Time**")
+                if not df_settlements.empty and df_settlements['Date Delivered'].notna().any():
+                    df_settlements['Date Delivered'] = pd.to_datetime(df_settlements['Date Delivered'])
+                    daily_settlements = df_settlements.groupby(df_settlements['Date Delivered'].dt.date)['Bushels'].sum()
+                    st.line_chart(daily_settlements)
     
     with tab2:
         st.subheader("Contract Details")
@@ -299,6 +330,78 @@ def main():
             st.info("No contracts match the selected filters.")
     
     with tab3:
+        st.subheader("Settlement Details")
+        
+        # Filter settlements (exclude header rows)
+        filtered_settlements = [s for s in all_settlements if s.status != 'Header']
+        
+        if filtered_settlements:
+            # Create DataFrame
+            df = pd.DataFrame([{
+                'Settlement ID': s.settlement_ID or 'N/A',
+                'Contract #': s.contract_id or 'N/A',
+                'Bushels': f"{s.bushels or 0:,.0f}",
+                'Price': f"${s.price or 0:.2f}",
+                'Date Delivered': s.date_delivered or 'N/A',
+                'Bin': s.bin or 'N/A',
+                'Buyer': s.buyer or 'N/A',
+                'Gross Amount': f"${s.gross_amount or 0:.2f}" if s.gross_amount else 'N/A',
+                'Net Amount': f"${s.net_amount or 0:.2f}" if s.net_amount else 'N/A',
+                'Adjustments': f"${s.adjustments or 0:.2f}" if s.adjustments else 'N/A',
+                'Status': s.status or 'N/A'
+            } for s in filtered_settlements])
+            
+            st.dataframe(df, height=400)
+            
+            # Summary statistics for settlements
+            st.subheader("Settlement Summary")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                total_bushels = sum(s.bushels or 0 for s in filtered_settlements)
+                st.metric("Total Bushels Delivered", f"{total_bushels:,.0f}")
+            
+            with col2:
+                total_gross = sum(s.gross_amount or 0 for s in filtered_settlements)
+                st.metric("Total Gross Amount", f"${total_gross:,.2f}")
+            
+            with col3:
+                total_net = sum(s.net_amount or 0 for s in filtered_settlements)
+                st.metric("Total Net Amount", f"${total_net:,.2f}")
+            
+            # Group by Settlement ID
+            if filtered_settlements:
+                settlement_groups = {}
+                for s in filtered_settlements:
+                    sid = s.settlement_ID or 'Unknown'
+                    if sid not in settlement_groups:
+                        settlement_groups[sid] = {
+                            'bushels': 0,
+                            'gross': 0,
+                            'net': 0,
+                            'count': 0
+                        }
+                    settlement_groups[sid]['bushels'] += s.bushels or 0
+                    settlement_groups[sid]['gross'] += s.gross_amount or 0
+                    settlement_groups[sid]['net'] += s.net_amount or 0
+                    settlement_groups[sid]['count'] += 1
+                
+                st.subheader("Summary by Settlement ID")
+                summary_df = pd.DataFrame([
+                    {
+                        'Settlement ID': sid,
+                        'Contracts': group['count'],
+                        'Total Bushels': f"{group['bushels']:,.0f}",
+                        'Total Gross': f"${group['gross']:,.2f}",
+                        'Total Net': f"${group['net']:,.2f}"
+                    }
+                    for sid, group in sorted(settlement_groups.items())
+                ])
+                st.dataframe(summary_df, width='stretch')
+        else:
+            st.info("No settlements found in database.")
+    
+    with tab4:
         st.subheader("Interactive Charts")
         
         if filtered_contracts:
@@ -363,7 +466,7 @@ def main():
         else:
             st.info("No contracts to display.")
     
-    with tab4:
+    with tab5:
         st.subheader("Export Data")
         
         col1, col2 = st.columns(2)
@@ -371,40 +474,79 @@ def main():
         with col1:
             if st.button("📥 Export to Excel", width='stretch'):
                 try:
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font, PatternFill, Alignment
+                    
+                    wb = Workbook()
+                    
+                    # Contracts sheet
                     if filtered_contracts:
-                        df = pd.DataFrame([{
-                            'Contract #': c.contract_number,
-                            'Commodity': c.commodity,
-                            'Bushels': c.bushels,
-                            'Price': c.price,
-                            'Basis': c.basis,
-                            'Status': c.status,
-                            'Date Sold': c.date_sold,
-                            'Buyer': c.buyer_name
-                        } for c in filtered_contracts])
+                        ws_contracts = wb.active
+                        ws_contracts.title = "Contracts"
+                        headers = ['Contract #', 'Commodity', 'Bushels', 'Price', 'Basis', 'Status', 'Date Sold', 'Buyer']
+                        ws_contracts.append(headers)
                         
-                        output_path = f"{PROJECT_PATH}/bushel_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                        df.to_excel(output_path, index=False)
-                        st.success(f"✓ Excel exported: {output_path}")
+                        # Style headers
+                        header_fill = PatternFill(start_color="667eea", end_color="667eea", fill_type="solid")
+                        header_font = Font(bold=True, color="FFFFFF")
+                        for cell in ws_contracts[1]:
+                            cell.fill = header_fill
+                            cell.font = header_font
+                            cell.alignment = Alignment(horizontal='center')
                         
-                        # Provide download link
-                        with open(output_path, 'rb') as f:
-                            st.download_button(
-                                label="Download Excel File",
-                                data=f.read(),
-                                file_name=f"bushel_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                    else:
-                        st.warning("No data to export.")
+                        for c in filtered_contracts:
+                            ws_contracts.append([
+                                c.contract_number, c.commodity, c.bushels, c.price, 
+                                c.basis, c.status, c.date_sold, c.buyer_name
+                            ])
+                    
+                    # Settlements sheet
+                    filtered_settlements = [s for s in all_settlements if s.status != 'Header']
+                    if filtered_settlements:
+                        ws_settlements = wb.create_sheet("Settlements")
+                        headers = ['Settlement ID', 'Contract #', 'Bushels', 'Price', 'Date Delivered', 'Bin', 'Buyer', 'Gross Amount', 'Net Amount', 'Adjustments', 'Status']
+                        ws_settlements.append(headers)
+                        
+                        # Style headers
+                        for cell in ws_settlements[1]:
+                            cell.fill = header_fill
+                            cell.font = header_font
+                            cell.alignment = Alignment(horizontal='center')
+                        
+                        for s in filtered_settlements:
+                            ws_settlements.append([
+                                s.settlement_ID, s.contract_id, s.bushels, s.price,
+                                s.date_delivered, s.bin, s.buyer, s.gross_amount,
+                                s.net_amount, s.adjustments, s.status
+                            ])
+                    
+                    output_path = f"{PROJECT_PATH}/bushel_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                    wb.save(output_path)
+                    st.success(f"✓ Excel exported: {output_path}")
+                    
+                    # Provide download link
+                    with open(output_path, 'rb') as f:
+                        st.download_button(
+                            label="Download Excel File",
+                            data=f.read(),
+                            file_name=f"bushel_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
                 except Exception as e:
                     st.error(f"Error exporting to Excel: {e}")
+                    import traceback
+                    with st.expander("Error details"):
+                        st.code(traceback.format_exc())
         
         with col2:
             if st.button("📄 Export to CSV", width='stretch'):
                 try:
+                    # Create a combined CSV or separate files
+                    st.write("**Export Options:**")
+                    
+                    # Contracts CSV
                     if filtered_contracts:
-                        df = pd.DataFrame([{
+                        df_contracts = pd.DataFrame([{
                             'Contract #': c.contract_number,
                             'Commodity': c.commodity,
                             'Bushels': c.bushels,
@@ -415,17 +557,46 @@ def main():
                             'Buyer': c.buyer_name
                         } for c in filtered_contracts])
                         
-                        csv = df.to_csv(index=False)
+                        csv_contracts = df_contracts.to_csv(index=False)
                         st.download_button(
-                            label="Download CSV File",
-                            data=csv,
-                            file_name=f"bushel_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            label="Download Contracts CSV",
+                            data=csv_contracts,
+                            file_name=f"contracts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                             mime="text/csv"
                         )
-                    else:
+                    
+                    # Settlements CSV
+                    filtered_settlements = [s for s in all_settlements if s.status != 'Header']
+                    if filtered_settlements:
+                        df_settlements = pd.DataFrame([{
+                            'Settlement ID': s.settlement_ID,
+                            'Contract #': s.contract_id,
+                            'Bushels': s.bushels,
+                            'Price': s.price,
+                            'Date Delivered': s.date_delivered,
+                            'Bin': s.bin,
+                            'Buyer': s.buyer,
+                            'Gross Amount': s.gross_amount,
+                            'Net Amount': s.net_amount,
+                            'Adjustments': s.adjustments,
+                            'Status': s.status
+                        } for s in filtered_settlements])
+                        
+                        csv_settlements = df_settlements.to_csv(index=False)
+                        st.download_button(
+                            label="Download Settlements CSV",
+                            data=csv_settlements,
+                            file_name=f"settlements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    
+                    if not filtered_contracts and not filtered_settlements:
                         st.warning("No data to export.")
                 except Exception as e:
                     st.error(f"Error exporting to CSV: {e}")
+                    import traceback
+                    with st.expander("Error details"):
+                        st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
