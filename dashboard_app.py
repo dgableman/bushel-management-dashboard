@@ -105,53 +105,62 @@ def main():
     st.markdown("---")
     
     # Show database path (for debugging)
-    with st.sidebar.expander("ℹ️ Settings", expanded=False):
+    with st.sidebar.expander("ℹ️ Settings", expanded=True):  # Expanded by default for debugging
         st.write(f"**Environment:** {'Streamlit Cloud' if is_streamlit_cloud() else 'Local' if not is_colab() else 'Colab'}")
         st.write(f"**Database Path:** `{DB_PATH}`")
         st.write(f"**Project Path:** `{PROJECT_PATH}`")
         st.write(f"**Script Location:** `{Path(__file__).absolute()}`")
-        if not os.path.exists(DB_PATH):
+        
+        # Always show file listings for debugging
+        data_folder = Path(DB_PATH).parent
+        st.write(f"\n**Data folder path:** `{data_folder}`")
+        st.write(f"**Data folder exists:** {'✅ Yes' if data_folder.exists() else '❌ No'}")
+        
+        if data_folder.exists():
+            st.write(f"\n**Files in data folder:**")
+            try:
+                files = list(data_folder.iterdir())
+                if files:
+                    for f in sorted(files):
+                        if f.is_file():
+                            size_kb = f.stat().st_size / 1024
+                            st.write(f"  📄 {f.name} ({size_kb:.1f} KB)")
+                        else:
+                            st.write(f"  📁 {f.name}/")
+                else:
+                    st.write("  (empty folder)")
+            except Exception as e:
+                st.write(f"  ❌ Error: {e}")
+        else:
+            st.write(f"  ❌ Data folder does not exist!")
+        
+        # Also check the project root to see what's there
+        st.write(f"\n**Project root:** `{PROJECT_PATH}`")
+        st.write(f"**Project root exists:** {'✅ Yes' if Path(PROJECT_PATH).exists() else '❌ No'}")
+        try:
+            root_files = list(Path(PROJECT_PATH).iterdir())
+            st.write(f"**Files/folders in project root (first 20):**")
+            for f in sorted(root_files)[:20]:
+                if f.is_dir():
+                    st.write(f"  📁 {f.name}/")
+                else:
+                    size_kb = f.stat().st_size / 1024
+                    st.write(f"  📄 {f.name} ({size_kb:.1f} KB)")
+        except Exception as e:
+            st.write(f"  ❌ Error: {e}")
+        
+        # Check if database file exists
+        if os.path.exists(DB_PATH):
+            st.success(f"✅ Database file found!")
+            st.write(f"**File size:** {os.path.getsize(DB_PATH) / 1024:.1f} KB")
+        else:
             st.error(f"⚠️ Database file not found!")
             st.write(f"**Looking for:** `{DB_PATH}`")
-            
-            # Check if data folder exists
-            data_folder = Path(DB_PATH).parent
-            if data_folder.exists():
-                st.write(f"✅ Data folder exists: `{data_folder}`")
-                st.write(f"**Files in data folder:**")
-                try:
-                    files = list(data_folder.iterdir())
-                    if files:
-                        for f in files:
-                            size_kb = f.stat().st_size / 1024 if f.is_file() else 0
-                            st.write(f"  - {f.name} ({size_kb:.1f} KB)")
-                    else:
-                        st.write("  (empty)")
-                except Exception as e:
-                    st.write(f"  Error listing files: {e}")
-            else:
-                st.write(f"❌ Data folder not found: `{data_folder}`")
-            
-            # Also check the project root to see what's there
-            st.write(f"\n**Project root:** `{PROJECT_PATH}`")
-            try:
-                root_files = list(Path(PROJECT_PATH).iterdir())
-                st.write(f"**Files/folders in project root:**")
-                for f in sorted(root_files)[:20]:  # Show first 20
-                    if f.is_dir():
-                        st.write(f"  📁 {f.name}/")
-                    else:
-                        size_kb = f.stat().st_size / 1024
-                        st.write(f"  📄 {f.name} ({size_kb:.1f} KB)")
-            except Exception as e:
-                st.write(f"  Error listing root: {e}")
-            
             st.info("""
-            **To fix this:**
-            1. Make sure `bushel_management.db` is in the `data/` folder in your GitHub repo
-            2. Check: https://github.com/dgableman/bushel-management-dashboard/tree/main/data
-            3. If file is missing, add it and push to GitHub
-            4. Streamlit Cloud will auto-redeploy
+            **To fix:**
+            1. Check if file is in GitHub: https://github.com/dgableman/bushel-management-dashboard/tree/main/data
+            2. If missing, add it and push to GitHub
+            3. Reboot Streamlit Cloud app (⋮ menu → Reboot app)
             """)
     
     # Get database session
