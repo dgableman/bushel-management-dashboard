@@ -24,8 +24,12 @@ def is_colab():
 
 def is_streamlit_cloud():
     """Check if running on Streamlit Cloud."""
-    # Streamlit Cloud sets this environment variable
-    return os.getenv('STREAMLIT_SERVER_PORT') is not None
+    # Streamlit Cloud sets these environment variables or paths
+    script_path = str(Path(__file__).absolute())
+    return (os.getenv('STREAMLIT_SERVER_PORT') is not None or 
+            os.getenv('STREAMLIT_SHARING_MODE') is not None or
+            '/mount/src' in script_path or
+            'streamlit.app' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''))
 
 # Set up paths based on environment
 if is_colab():
@@ -34,12 +38,28 @@ if is_colab():
     DB_PATH = os.getenv('DB_PATH', '/content/drive/MyDrive/Colab_Notebooks/Grain_Manager/database/bushel_management.db')
 elif is_streamlit_cloud():
     # Streamlit Cloud paths
+    # Streamlit Cloud mounts the repo at /mount/src/REPO_NAME
     SCRIPT_DIR = Path(__file__).parent.absolute()
     PROJECT_PATH = str(SCRIPT_DIR)
-    # For Streamlit Cloud, database should be in the repo or set via environment variable
-    # Option 1: Database in repo at data/bushel_management.db
-    # Option 2: Set DB_PATH via Streamlit Cloud secrets (recommended for production)
-    DB_PATH = os.getenv('DB_PATH', str(SCRIPT_DIR / 'data' / 'bushel_management.db'))
+    
+    # Try multiple possible paths for the database
+    possible_paths = [
+        str(SCRIPT_DIR / 'data' / 'bushel_management.db'),  # Standard path
+        str(SCRIPT_DIR / 'data' / 'bushel-management.db'),   # Hyphen version
+        '/mount/src/bushel-management-dashboard/data/bushel_management.db',  # Absolute Streamlit Cloud path
+        '/mount/src/bushel-management-dashboard/data/bushel-management.db',  # Absolute with hyphen
+    ]
+    
+    # Use environment variable if set, otherwise try to find existing file
+    DB_PATH = os.getenv('DB_PATH')
+    if not DB_PATH:
+        for path in possible_paths:
+            if os.path.exists(path):
+                DB_PATH = path
+                break
+        else:
+            # Default to the most likely path
+            DB_PATH = possible_paths[0]
 else:
     # Local paths - adjust these to match your local setup
     # Get the directory where this script is located
@@ -86,8 +106,10 @@ def main():
     
     # Show database path (for debugging)
     with st.sidebar.expander("ℹ️ Settings", expanded=False):
-        st.write(f"**Database:** `{DB_PATH}`")
-        st.write(f"**Project:** `{PROJECT_PATH}`")
+        st.write(f"**Environment:** {'Streamlit Cloud' if is_streamlit_cloud() else 'Local' if not is_colab() else 'Colab'}")
+        st.write(f"**Database Path:** `{DB_PATH}`")
+        st.write(f"**Project Path:** `{PROJECT_PATH}`")
+        st.write(f"**Script Location:** `{Path(__file__).absolute()}`")
         if not os.path.exists(DB_PATH):
             st.error(f"⚠️ Database file not found!")
             st.write(f"**Looking for:** `{DB_PATH}`")
@@ -101,13 +123,28 @@ def main():
                     files = list(data_folder.iterdir())
                     if files:
                         for f in files:
-                            st.write(f"  - {f.name} ({f.stat().st_size / 1024:.1f} KB)")
+                            size_kb = f.stat().st_size / 1024 if f.is_file() else 0
+                            st.write(f"  - {f.name} ({size_kb:.1f} KB)")
                     else:
                         st.write("  (empty)")
                 except Exception as e:
                     st.write(f"  Error listing files: {e}")
             else:
                 st.write(f"❌ Data folder not found: `{data_folder}`")
+            
+            # Also check the project root to see what's there
+            st.write(f"\n**Project root:** `{PROJECT_PATH}`")
+            try:
+                root_files = list(Path(PROJECT_PATH).iterdir())
+                st.write(f"**Files/folders in project root:**")
+                for f in sorted(root_files)[:20]:  # Show first 20
+                    if f.is_dir():
+                        st.write(f"  📁 {f.name}/")
+                    else:
+                        size_kb = f.stat().st_size / 1024
+                        st.write(f"  📄 {f.name} ({size_kb:.1f} KB)")
+            except Exception as e:
+                st.write(f"  Error listing root: {e}")
             
             st.info("""
             **To fix this:**
