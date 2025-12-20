@@ -32,7 +32,7 @@ git push -u origin main
 2. Click **"Sign up"** ? Connect GitHub account
 3. Click **"New app"**
 4. Fill in:
-   - **Repository:** `your-username/bushel-management-dashboard`
+   - **Repository:** `dgableman/bushel-management-dashboard`
    - **Branch:** `main`
    - **Main file path:** `dashboard_app.py`
 5. Click **"Deploy"**

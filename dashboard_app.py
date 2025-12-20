@@ -90,7 +90,32 @@ def main():
         st.write(f"**Project:** `{PROJECT_PATH}`")
         if not os.path.exists(DB_PATH):
             st.error(f"⚠️ Database file not found!")
-            st.info("Update DB_PATH in the script or set DB_PATH environment variable")
+            st.write(f"**Looking for:** `{DB_PATH}`")
+            
+            # Check if data folder exists
+            data_folder = Path(DB_PATH).parent
+            if data_folder.exists():
+                st.write(f"✅ Data folder exists: `{data_folder}`")
+                st.write(f"**Files in data folder:**")
+                try:
+                    files = list(data_folder.iterdir())
+                    if files:
+                        for f in files:
+                            st.write(f"  - {f.name} ({f.stat().st_size / 1024:.1f} KB)")
+                    else:
+                        st.write("  (empty)")
+                except Exception as e:
+                    st.write(f"  Error listing files: {e}")
+            else:
+                st.write(f"❌ Data folder not found: `{data_folder}`")
+            
+            st.info("""
+            **To fix this:**
+            1. Make sure `bushel_management.db` is in the `data/` folder in your GitHub repo
+            2. Check: https://github.com/dgableman/bushel-management-dashboard/tree/main/data
+            3. If file is missing, add it and push to GitHub
+            4. Streamlit Cloud will auto-redeploy
+            """)
     
     # Get database session
     db = get_database_session()
