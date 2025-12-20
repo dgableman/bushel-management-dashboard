@@ -21,6 +21,7 @@ ENV/
 
 # Database files (don't commit the actual database)
 *.db
+!data/bushel_management.db
 *.sqlite
 *.sqlite3
 
