@@ -1,0 +1,23 @@
+# Database (read-only)
+sqlalchemy>=2.0.0
+
+# Data analysis and reporting
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Date utilities
+python-dateutil>=2.8.0
+
+# Streamlit and visualization
+streamlit>=1.28.0
+plotly>=5.17.0
+openpyxl>=3.1.0
+
+# GUI (tkinter is included with Python, but listed for clarity)
+# tkinter - included with Python
+
+# Google Drive access (for Colab)
+# Note: google-colab package is included in Colab environment
+# If running locally, you may need: google-api-python-client
+
