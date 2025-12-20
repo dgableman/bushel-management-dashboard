@@ -91,10 +91,24 @@ st.set_page_config(
 def get_database_session():
     """Create and cache database session."""
     try:
-        return create_db_session(DB_PATH)
+        # Double-check file exists before trying to connect
+        db_path_obj = Path(DB_PATH)
+        if not db_path_obj.exists():
+            raise FileNotFoundError(f"Database file not found: {DB_PATH}")
+        
+        # Try to create the session
+        session = create_db_session(DB_PATH)
+        return session
+    except FileNotFoundError as e:
+        st.error(f"❌ {e}")
+        st.info(f"**File check:** `os.path.exists('{DB_PATH}')` = {os.path.exists(DB_PATH)}")
+        st.info(f"**Path check:** `Path('{DB_PATH}').exists()` = {Path(DB_PATH).exists()}")
+        return None
     except Exception as e:
-        st.error(f"Database connection error: {e}")
-        st.info(f"Make sure the database file exists at: {DB_PATH}")
+        st.error(f"❌ Database connection error: {type(e).__name__}: {e}")
+        import traceback
+        with st.expander("🔍 Full error details"):
+            st.code(traceback.format_exc())
         return None
 
 def main():
@@ -150,18 +164,33 @@ def main():
             st.write(f"  ❌ Error: {e}")
         
         # Check if database file exists
-        if os.path.exists(DB_PATH):
+        file_exists_os = os.path.exists(DB_PATH)
+        file_exists_path = Path(DB_PATH).exists()
+        file_size = os.path.getsize(DB_PATH) / 1024 if file_exists_os else 0
+        
+        if file_exists_os and file_exists_path:
             st.success(f"✅ Database file found!")
-            st.write(f"**File size:** {os.path.getsize(DB_PATH) / 1024:.1f} KB")
+            st.write(f"**File size:** {file_size:.1f} KB")
+            st.write(f"**os.path.exists():** ✅")
+            st.write(f"**Path().exists():** ✅")
         else:
             st.error(f"⚠️ Database file not found!")
             st.write(f"**Looking for:** `{DB_PATH}`")
+            st.write(f"**os.path.exists():** {'✅' if file_exists_os else '❌'}")
+            st.write(f"**Path().exists():** {'✅' if file_exists_path else '❌'}")
+            if file_exists_os != file_exists_path:
+                st.warning("⚠️ Path check mismatch! This might indicate a permission or path resolution issue.")
             st.info("""
             **To fix:**
             1. Check if file is in GitHub: https://github.com/dgableman/bushel-management-dashboard/tree/main/data
             2. If missing, add it and push to GitHub
             3. Reboot Streamlit Cloud app (⋮ menu → Reboot app)
             """)
+        
+        # Add a button to clear cache and retry
+        if st.button("🔄 Clear Cache & Retry Connection"):
+            st.cache_resource.clear()
+            st.rerun()
     
     # Get database session
     db = get_database_session()
