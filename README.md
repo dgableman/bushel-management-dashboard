@@ -106,3 +106,4 @@ When the main `Bushel_Management/database/models.py` changes:
 3. Keep only the table structure and read-only properties
 
 
+# bushel-management-dashboard
