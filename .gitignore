@@ -39,6 +39,7 @@ Thumbs.db
 
 # Secrets and tokens (NEVER commit these!)
 .github_token.txt
+DEPLOYMENT_CREDENTIALS.md
 *.token
 *.secret
 
