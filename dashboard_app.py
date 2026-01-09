@@ -326,11 +326,17 @@ def get_database_session(_username):
             return None  # Username not set yet
         
         # Construct database path based on username
-        # Use the same directory as the default DB_PATH but with username prefix
-        default_db_path = Path(DB_PATH)
-        db_dir = default_db_path.parent
-        db_filename = f"{_username}_bushel_management.db"
-        db_path = str(db_dir / db_filename)
+        # On Streamlit Cloud, use the script directory to find data folder
+        if is_streamlit_cloud():
+            # Streamlit Cloud: use script directory to find data folder
+            script_dir = Path(__file__).parent.absolute()
+            db_path = str(script_dir / 'data' / f"{_username}_bushel_management.db")
+        else:
+            # Local/Colab: Use the same directory as the default DB_PATH but with username prefix
+            default_db_path = Path(DB_PATH)
+            db_dir = default_db_path.parent
+            db_filename = f"{_username}_bushel_management.db"
+            db_path = str(db_dir / db_filename)
         
         # Check Streamlit secrets first (for Streamlit Cloud deployment)
         # This can override the username-based path if needed
@@ -343,15 +349,56 @@ def get_database_session(_username):
         # Double-check file exists before trying to connect
         db_path_obj = Path(db_path)
         if not db_path_obj.exists():
-            raise FileNotFoundError(f"Database file not found: {db_path}")
+            # On Streamlit Cloud, try alternative paths
+            if is_streamlit_cloud():
+                # Try absolute mount path
+                alt_paths = [
+                    f"/mount/src/bushel-management-dashboard/data/{_username}_bushel_management.db",
+                    str(Path(__file__).parent.absolute() / 'data' / f"{_username}_bushel_management.db"),
+                ]
+                for alt_path in alt_paths:
+                    alt_path_obj = Path(alt_path)
+                    if alt_path_obj.exists():
+                        db_path = alt_path
+                        db_path_obj = alt_path_obj
+                        break
+                else:
+                    # Still not found, show helpful error
+                    raise FileNotFoundError(
+                        f"Database file not found: {db_path}\n"
+                        f"Tried paths:\n"
+                        f"  - {db_path}\n"
+                        f"  - {alt_paths[0]}\n"
+                        f"  - {alt_paths[1]}\n"
+                        f"Username: {_username}\n"
+                        f"Script dir: {Path(__file__).parent.absolute()}"
+                    )
+            else:
+                raise FileNotFoundError(f"Database file not found: {db_path}")
         
         # Try to create the session
         session = create_db_session(db_path)
         return session
     except FileNotFoundError as e:
         st.error(f"❌ {e}")
-        st.info(f"**Expected database path:** `{db_path}`")
-        st.info(f"**File exists:** {Path(db_path).exists()}")
+        # Try to show helpful debug info
+        try:
+            username = st.session_state.get('username', 'Unknown')
+            script_dir = Path(__file__).parent.absolute()
+            st.info(f"**Username:** `{username}`")
+            st.info(f"**Script directory:** `{script_dir}`")
+            st.info(f"**Expected database path:** `{script_dir / 'data' / f'{username}_bushel_management.db'}`")
+            st.info(f"**Streamlit Cloud mount path:** `/mount/src/bushel-management-dashboard/data/{username}_bushel_management.db`")
+            # List files in data directory if it exists
+            data_dir = script_dir / 'data'
+            if data_dir.exists():
+                st.info(f"**Files in data directory:**")
+                for f in sorted(data_dir.glob('*.db')):
+                    st.write(f"  - {f.name} ({f.stat().st_size / 1024:.1f} KB)")
+            else:
+                st.warning(f"**Data directory does not exist:** `{data_dir}`")
+        except Exception as debug_error:
+            st.warning(f"Could not gather debug info: {debug_error}")
         return None
     except Exception as e:
         st.error(f"❌ Database connection error: {type(e).__name__}: {e}")
@@ -414,7 +461,11 @@ def main():
         
         if username and username.strip():
             # Store username in session state
-            st.session_state.username = username.strip()
+            new_username = username.strip()
+            # If username changed, clear the cache
+            if st.session_state.get('username') != new_username:
+                get_database_session.clear()
+            st.session_state.username = new_username
             st.rerun()  # Rerun to load the dashboard with the username
         else:
             st.info("👆 Please enter a username above to access the dashboard.")
@@ -435,7 +486,10 @@ def main():
         
         # Allow user to change username
         if st.button("🔄 Change Username", key="change_username_btn"):
+            # Clear username and cache
             st.session_state.username = None
+            # Clear the database session cache
+            get_database_session.clear()
             st.rerun()
         
         st.write(f"**Environment:** {'Streamlit Cloud' if is_streamlit_cloud() else 'Local' if not is_colab() else 'Colab'}")
