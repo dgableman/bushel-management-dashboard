@@ -1,5 +1,6 @@
 """
 Bin and storage-related read-only queries.
+Includes functions for grouping bins by crop or location.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
