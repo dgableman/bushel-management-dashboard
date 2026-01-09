@@ -86,12 +86,6 @@ from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
 from reports.bin_queries import get_bins_with_storage_by_crop
-try:
-    from reports.bin_queries import get_bins_with_storage_by_location
-except ImportError:
-    # Fallback if function doesn't exist (shouldn't happen but handles caching issues)
-    def get_bins_with_storage_by_location(db, crop_year, include_empty=False):
-        return {}
 from reports.commodity_utils import (
     normalize_commodity_name,
     get_commodities_for_normalized_name,
@@ -1437,6 +1431,8 @@ def main():
                 bins_by_group = get_bins_with_storage_by_crop(db, selected_crop_year, include_empty=include_empty_bins)
                 group_label = "Crop"
             else:
+                # Import here to avoid import errors if function doesn't exist (handles caching issues)
+                from reports.bin_queries import get_bins_with_storage_by_location
                 bins_by_group = get_bins_with_storage_by_location(db, selected_crop_year, include_empty=include_empty_bins)
                 group_label = "Location"
         except Exception as e:
