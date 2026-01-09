@@ -9,9 +9,10 @@ This guide documents the Streamlit Cloud deployment setup for the Bushel Managem
 ✅ **Repository:** https://github.com/dgableman/bushel-management-dashboard  
 ✅ **GitHub Username:** `dgableman`  
 ✅ **Authentication:** Personal Access Token (PAT) configured  
-✅ **Database:** Included in repository at `data/bushel_management.db`  
+✅ **Database:** Username-based database files (`{username}_bushel_management.db`)  
 ✅ **Streamlit Secrets:** Supported (configured in `dashboard_app.py`)  
-✅ **Remote URL:** `https://github.com/dgableman/bushel-management-dashboard.git`
+✅ **Remote URL:** `https://github.com/dgableman/bushel-management-dashboard.git`  
+✅ **Username Feature:** Users must enter username on first load to access their database
 
 ---
 
@@ -54,18 +55,24 @@ This guide documents the Streamlit Cloud deployment setup for the Bushel Managem
 
 ### Step 3: Database Configuration
 
-**Method Used:** Option 1 - Database included in repository
+**Method Used:** Username-based database files
 
-1. **Configured `.gitignore`:**
-   - Added exception: `!data/bushel_management.db`
-   - This allows the database file to be committed while ignoring other `.db` files
+1. **Username-based database paths:**
+   - Each user enters their username on first load
+   - Database file: `{username}_bushel_management.db`
+   - Location: `data/{username}_bushel_management.db`
+   - Allows multiple users to have separate databases
 
-2. **Database location:**
-   - Path: `data/bushel_management.db`
-   - Committed to repository
-   - Automatically deployed with code
+2. **Database files:**
+   - Can be committed to repository (one per user)
+   - Or stored externally and accessed via Streamlit Secrets
+   - Format: `{username}_bushel_management.db`
 
-**⚠️ Note:** The database is public in the repository. Consider using Streamlit Secrets (Option 2) if data becomes sensitive.
+3. **Configured `.gitignore`:**
+   - Can add exceptions for specific user databases: `!data/*_bushel_management.db`
+   - Or ignore all and use Streamlit Secrets for database paths
+
+**⚠️ Note:** If databases contain sensitive data, use Streamlit Secrets (Option 2) instead of committing to repository.
 
 ### Step 4: Code Deployment
 
@@ -146,22 +153,23 @@ git push origin main
 **When:** Database file has been updated from the main Bushel_Management project
 
 **Steps:**
-1. **Copy updated database:**
+1. **Copy updated database with username prefix:**
    ```bash
    # From the main Bushel_Management project
+   # Replace 'username' with the actual username
    cp /path/to/Bushel_Management/data/bushel_management.db \
-      /path/to/Bushel_Management_Reports/data/bushel_management.db
+      /path/to/Bushel_Management_Reports/data/{username}_bushel_management.db
    ```
 
 2. **Verify database file exists:**
    ```bash
-   ls -lh data/bushel_management.db
+   ls -lh data/{username}_bushel_management.db
    ```
 
 3. **Stage and commit:**
    ```bash
-   git add data/bushel_management.db
-   git commit -m "Update database from main project"
+   git add data/{username}_bushel_management.db
+   git commit -m "Update database for user: {username}"
    ```
 
 4. **Push to GitHub:**
@@ -171,7 +179,10 @@ git push origin main
 
 5. **Streamlit Cloud will redeploy** with the new database
 
-**⚠️ Note:** If database file is large (>100MB), consider using Streamlit Secrets instead (see Option 2 below).
+**⚠️ Note:** 
+- Each user has their own database file: `{username}_bushel_management.db`
+- If database file is large (>100MB), consider using Streamlit Secrets instead (see Option 2 below)
+- Users enter their username on first load to access their specific database
 
 ### Workflow 3: Adding New Dependencies
 

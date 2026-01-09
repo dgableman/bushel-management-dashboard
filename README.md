@@ -40,6 +40,8 @@ This is a separate, read-only project that provides reporting and analysis capab
 
 **Streamlit Cloud (Recommended):**
 - Dashboard is deployed and accessible via Streamlit Cloud
+- **Username Required:** Enter your username on first load to access your database
+- Database file: `{username}_bushel_management.db`
 - See [STREAMLIT_CLOUD_SETUP.md](STREAMLIT_CLOUD_SETUP.md) for deployment details
 
 ### Run Locally

@@ -2,7 +2,7 @@
 Utilities for crop year calculations and sales reporting.
 """
 from datetime import date, datetime
-from typing import Tuple
+from typing import Tuple, List
 from sqlalchemy.orm import Session
 from database.models import (
     Contract, Settlement, CropTotals, HarvestActual
@@ -131,3 +131,41 @@ def calculate_settlement_revenue(settlement: Settlement) -> float:
     elif settlement.bushels is not None and settlement.price is not None:
         return float(settlement.bushels) * float(settlement.price)
     return 0.0
+
+
+def calculate_partial_contract_remaining(
+    contract: Contract, 
+    all_settlements: List[Settlement]
+) -> Tuple[float, int]:
+    """
+    Calculate remaining revenue and bushels for a partial contract.
+    
+    For partial contracts, finds all settlements linked to the contract
+    (regardless of crop year) and calculates what's remaining.
+    
+    Args:
+        contract: Contract object
+        all_settlements: List of all settlements (to find linked ones)
+        
+    Returns:
+        Tuple of (remaining_revenue, remaining_bushels)
+    """
+    contract_bushels = contract.bushels or 0
+    contract_price = contract.price or 0.0
+    contract_total_revenue = contract_bushels * contract_price
+    
+    # Find ALL settlements for this contract (not just crop year)
+    contract_settlements = [
+        s for s in all_settlements
+        if s.contract_id == contract.contract_number
+    ]
+    
+    # Calculate settled revenue and bushels
+    settled_revenue = sum(calculate_settlement_revenue(s) for s in contract_settlements)
+    settled_bushels = sum(s.bushels or 0 for s in contract_settlements)
+    
+    # Calculate remaining
+    remaining_revenue = contract_total_revenue - settled_revenue
+    remaining_bushels = contract_bushels - settled_bushels
+    
+    return remaining_revenue, remaining_bushels

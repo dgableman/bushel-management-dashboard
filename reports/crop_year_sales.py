@@ -8,7 +8,8 @@ from reports.commodity_utils import normalize_commodity_name
 from reports.crop_year_utils import (
     is_date_in_crop_year,
     get_starting_bushels,
-    calculate_settlement_revenue
+    calculate_settlement_revenue,
+    calculate_partial_contract_remaining
 )
 
 
@@ -40,6 +41,12 @@ def calculate_crop_year_sales(db: Session, crop_year: int) -> Dict[str, Dict]:
         if s.date_delivered and is_date_in_crop_year(s.date_delivered, crop_year)
     ]
     
+    # Debug: Log settlement counts
+    # print(f"DEBUG: Total settlements: {len(all_settlements)}")
+    # print(f"DEBUG: Settlements in crop year {crop_year}: {len(settlements_in_year)}")
+    # for s in settlements_in_year[:5]:  # First 5
+    #     print(f"  - {s.commodity}, {s.date_delivered}, status={s.status}")
+    
     # Get all contracts (need all for partial contract calculations)
     all_contracts = db.query(Contract).all()
     contracts_in_year = [
@@ -67,18 +74,26 @@ def calculate_crop_year_sales(db: Session, crop_year: int) -> Dict[str, Dict]:
         for s in settlements_in_year:
             normalized_crop = normalize_commodity_name(db, s.commodity)
             if normalized_crop == crop:
-                if s.status == 'Header':
+                # Check status - handle case-insensitive and various formats
+                status = (s.status or '').strip()
+                if status.lower() == 'header':
                     # Sold revenue from header
-                    sold_revenue += calculate_settlement_revenue(s)
+                    revenue = calculate_settlement_revenue(s)
+                    sold_revenue += revenue
                     # Sold bushels from header only
                     if s.bushels:
                         sold_bushels += s.bushels
         
-        # 2. Calculate CONTRACTED revenue and bushels
+        # 2. Calculate CONTRACTED revenue and bushels (only Active contracts with fill_status None or Partial)
         contracted_revenue = 0.0
         contracted_bushels = 0
         
         for contract in contracts_in_year:
+            # Filter by status='Active'
+            contract_status = (contract.status or '').strip()
+            if contract_status.lower() != 'active':
+                continue
+            
             normalized_crop = normalize_commodity_name(db, contract.commodity)
             if normalized_crop != crop:
                 continue
@@ -87,28 +102,16 @@ def calculate_crop_year_sales(db: Session, crop_year: int) -> Dict[str, Dict]:
             contract_price = contract.price or 0.0
             fill_status = contract.fill_status or 'None'
             
+            # Only count contracts with fill_status None or Partial
             if fill_status == 'None':
                 # Easy part: no bushels delivered
                 contracted_revenue += contract_bushels * contract_price
                 contracted_bushels += contract_bushels
             elif fill_status == 'Partial':
-                # Partial: calculate remaining
-                contract_total_revenue = contract_bushels * contract_price
-                
-                # Find ALL settlements for this contract (not just crop year)
-                contract_settlements = [
-                    s for s in all_settlements
-                    if s.contract_id == contract.contract_number
-                ]
-                
-                # Calculate settled revenue and bushels
-                settled_revenue = sum(calculate_settlement_revenue(s) for s in contract_settlements)
-                settled_bushels = sum(s.bushels or 0 for s in contract_settlements)
-                
-                # Remaining
-                remaining_revenue = contract_total_revenue - settled_revenue
-                remaining_bushels = contract_bushels - settled_bushels
-                
+                # Partial: calculate remaining using reusable function
+                remaining_revenue, remaining_bushels = calculate_partial_contract_remaining(
+                    contract, all_settlements
+                )
                 contracted_revenue += remaining_revenue
                 contracted_bushels += remaining_bushels
         
