@@ -68,10 +68,13 @@ else:
     # Get the directory where this script is located
     SCRIPT_DIR = Path(__file__).parent.absolute()
     PROJECT_PATH = str(SCRIPT_DIR)
-    # Default local database path - database is in the 'data' folder
-    DB_PATH = os.getenv('DB_PATH', str(SCRIPT_DIR / 'data' / 'bushel_management.db'))
-    # Alternative: if database is in the main Bushel_Management project:
-    # DB_PATH = os.getenv('DB_PATH', '/path/to/Bushel_Management/data/bushel_management.db')
+    # Default local database path - use the main Bushel_Management project database
+    # This allows the reporting project to always use the most up-to-date database
+    default_local_db = Path.home() / 'PycharmProjects' / 'Bushel_Management' / 'data' / 'bushel_management.db'
+    # Fallback to local data folder if main project database doesn't exist
+    if not default_local_db.exists():
+        default_local_db = SCRIPT_DIR / 'data' / 'bushel_management.db'
+    DB_PATH = os.getenv('DB_PATH', str(default_local_db))
 
 # Add project to path
 if PROJECT_PATH not in sys.path:
