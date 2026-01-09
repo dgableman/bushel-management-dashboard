@@ -48,7 +48,8 @@ class Contract(Base):
     fill_status = Column(String, default="None")  # None, Partial, Filled, Over
     source = Column(String, nullable=True)  # "Manually Imported", "Auto-created from Settlement"
     needs_review = Column(Integer, default=0)  # 0 = False, 1 = True (boolean flag for contracts needing import)
-    notes = Column(Text, nullable=True)
+    updates = Column(Text, nullable=True)  # Updates/notes field (renamed from notes)
+    user_notes = Column(Text, nullable=True)  # User notes field
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -134,8 +135,10 @@ class Settlement(Base):
     date_delivered = Column(Date, nullable=True)  # Delivery date or delivery period
     
     # Quantity and pricing
-    bushels = Column(Float, nullable=True)  # Net quantity in bushels
+    bushels = Column(Integer, nullable=True)  # Net quantity in bushels (INTEGER in database)
     price = Column(Float, nullable=True)  # Trade price per bushel
+    commodity = Column(String, nullable=True)  # Commodity type
+    bushels_to_remove = Column(Integer, nullable=True)  # Bushels to remove
     
     # Storage
     bin = Column(String, nullable=True)  # Bin number or identifier
@@ -149,10 +152,73 @@ class Settlement(Base):
     buyer = Column(String, nullable=True)  # Buyer/Location name
     
     # Metadata
+    source = Column(String, nullable=True)  # Source of settlement
+    updates = Column(Text, nullable=True)  # Updates/notes field
+    user_notes = Column(Text, nullable=True)  # User notes field
+    line_number = Column(Integer, nullable=True)  # Line number in settlement document
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     def __repr__(self):
         return f"<Settlement(id={self.id}, settlement_ID='{self.settlement_ID}', contract_id={self.contract_id})>"
+
+
+class CommodityMapping(Base):
+    """Model representing commodity name mappings (read-only)."""
+    __tablename__ = "commodity_mappings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    alias = Column(String, nullable=False, unique=True)  # The variation/alias name
+    standard_name = Column(String, nullable=False)  # The normalized/standard name
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    
+    def __repr__(self):
+        return f"<CommodityMapping(id={self.id}, alias='{self.alias}', standard_name='{self.standard_name}')>"
+
+
+class CropTotals(Base):
+    """Model representing aggregate crop totals by crop year (read-only)."""
+    __tablename__ = "crop_totals"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    crop_year = Column(Integer, nullable=False, index=True)
+    crop = Column(String, nullable=False)
+    initial_content = Column(Integer, nullable=False, default=0)  # Total bushels
+    type = Column(String, nullable=False)  # "Estimate" or "Actual"
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    
+    def __repr__(self):
+        return f"<CropTotals(id={self.id}, crop_year={self.crop_year}, crop='{self.crop}', initial_content={self.initial_content}, type='{self.type}')>"
+
+
+class HarvestActual(Base):
+    """Model representing actual harvest records by field and crop year (read-only)."""
+    __tablename__ = "harvest_actual"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    field = Column(String, nullable=False, index=True)
+    crop_year = Column(Integer, nullable=False)
+    crop = Column(String, nullable=False)
+    bushels = Column(Integer, nullable=False, default=0)
+    finished_date = Column(Date, nullable=False)  # Date when this harvest entry was completed
+    status = Column(String, nullable=False, default="Partial")  # Partial or Complete
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    
+    def __repr__(self):
+        return f"<HarvestActual(id={self.id}, field='{self.field}', crop_year={self.crop_year}, crop='{self.crop}', bushels={self.bushels}, finished_date={self.finished_date}, status='{self.status}')>"
+
+
+
+
+
+
+
+
+
+
+
 
 

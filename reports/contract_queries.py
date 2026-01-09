@@ -53,3 +53,14 @@ def get_contracts_by_date_range(
     return query.all()
 
 
+
+
+
+
+
+
+
+
+
+
+

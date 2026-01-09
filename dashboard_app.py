@@ -42,17 +42,20 @@ elif is_streamlit_cloud():
     SCRIPT_DIR = Path(__file__).parent.absolute()
     PROJECT_PATH = str(SCRIPT_DIR)
     
-    # Try multiple possible paths for the database
-    possible_paths = [
-        str(SCRIPT_DIR / 'data' / 'bushel_management.db'),  # Standard path
-        str(SCRIPT_DIR / 'data' / 'bushel-management.db'),   # Hyphen version
-        '/mount/src/bushel-management-dashboard/data/bushel_management.db',  # Absolute Streamlit Cloud path
-        '/mount/src/bushel-management-dashboard/data/bushel-management.db',  # Absolute with hyphen
-    ]
+    # Try Streamlit secrets first (recommended for production)
+    # Note: st.secrets may not be available at import time, so we'll check it in the main function
+    DB_PATH = os.getenv('DB_PATH')  # Check environment variable first
     
-    # Use environment variable if set, otherwise try to find existing file
-    DB_PATH = os.getenv('DB_PATH')
+    # If not set, try to find the database file
     if not DB_PATH:
+        # Try multiple possible paths for the database
+        possible_paths = [
+            str(SCRIPT_DIR / 'data' / 'bushel_management.db'),  # Standard path
+            str(SCRIPT_DIR / 'data' / 'bushel-management.db'),   # Hyphen version
+            '/mount/src/bushel-management-dashboard/data/bushel_management.db',  # Absolute Streamlit Cloud path
+            '/mount/src/bushel-management-dashboard/data/bushel-management.db',  # Absolute with hyphen
+        ]
+        
         for path in possible_paths:
             if os.path.exists(path):
                 DB_PATH = path
@@ -77,7 +80,13 @@ if PROJECT_PATH not in sys.path:
 from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
-from reports.bin_queries import get_all_bins
+from reports.commodity_utils import (
+    normalize_commodity_name,
+    get_commodities_for_normalized_name,
+    get_all_normalized_commodities
+)
+from reports.crop_year_utils import get_current_crop_year, get_crop_year_date_range
+from reports.crop_year_sales import calculate_crop_year_sales
 
 # Set page config for full-width layout
 st.set_page_config(
@@ -91,13 +100,21 @@ st.set_page_config(
 def get_database_session():
     """Create and cache database session."""
     try:
+        # Check Streamlit secrets first (for Streamlit Cloud deployment)
+        db_path = DB_PATH
+        try:
+            if hasattr(st, 'secrets') and st.secrets.get("DB_PATH"):
+                db_path = st.secrets.get("DB_PATH")
+        except (AttributeError, FileNotFoundError, KeyError):
+            pass  # Secrets not available or not configured, use default
+        
         # Double-check file exists before trying to connect
-        db_path_obj = Path(DB_PATH)
+        db_path_obj = Path(db_path)
         if not db_path_obj.exists():
-            raise FileNotFoundError(f"Database file not found: {DB_PATH}")
+            raise FileNotFoundError(f"Database file not found: {db_path}")
         
         # Try to create the session
-        session = create_db_session(DB_PATH)
+        session = create_db_session(db_path)
         return session
     except FileNotFoundError as e:
         st.error(f"❌ {e}")
@@ -197,276 +214,274 @@ def main():
     if db is None:
         st.stop()
     
-    # Sidebar filters
-    st.sidebar.header("🔍 Filters")
-    
-    # Get all contracts for filter options
+    # Get all contracts and settlements for calculations
     all_contracts = get_all_contracts(db)
     all_settlements = get_all_settlements(db)
-    all_bins = get_all_bins(db)
-    
-    # Filter options
-    commodities = ['All'] + sorted(list(set([c.commodity for c in all_contracts if c.commodity])))
-    statuses = ['All'] + sorted(list(set([c.status for c in all_contracts if c.status])))
-    
-    selected_commodity = st.sidebar.selectbox("Commodity", commodities, index=0)
-    selected_status = st.sidebar.selectbox("Status", statuses, index=0)
-    
-    date_from = st.sidebar.date_input("From Date", value=None)
-    date_to = st.sidebar.date_input("To Date", value=None)
-    
-    # Filter contracts
-    filtered_contracts = all_contracts.copy()
-    if selected_commodity != 'All':
-        filtered_contracts = [c for c in filtered_contracts if c.commodity == selected_commodity]
-    if selected_status != 'All':
-        filtered_contracts = [c for c in filtered_contracts if c.status == selected_status]
-    if date_from:
-        filtered_contracts = [c for c in filtered_contracts if c.date_sold and c.date_sold >= date_from]
-    if date_to:
-        filtered_contracts = [c for c in filtered_contracts if c.date_sold and c.date_sold <= date_to]
-    
-    # Summary statistics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Contracts", len(filtered_contracts))
-    
-    with col2:
-        active_count = len([c for c in filtered_contracts if c.status == 'Active'])
-        st.metric("Active Contracts", active_count)
-    
-    with col3:
-        st.metric("Total Settlements", len(all_settlements))
-    
-    with col4:
-        st.metric("Storage Bins", len(all_bins))
-    
-    st.markdown("---")
     
     # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📋 Contracts", "💰 Settlements", "📈 Charts", "📥 Export"])
+    tab1, tab2 = st.tabs(["🌾 Crop Year Sales", "📥 Export"])
     
     with tab1:
-        st.subheader("Summary Statistics")
+        st.subheader("Crop Year Sales")
         
-        # Contracts summary
-        if filtered_contracts:
-            df_contracts = pd.DataFrame([{
-                'Contract': c.contract_number or 'N/A',
-                'Commodity': c.commodity or 'Unknown',
-                'Bushels': c.bushels or 0,
-                'Price': c.price or 0,
-                'Basis': c.basis or 0,
-                'Status': c.status or 'Unknown',
-                'Date Sold': c.date_sold,
-                'Buyer': c.buyer_name or 'N/A'
-            } for c in filtered_contracts])
-            
-            # Summary by commodity
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Bushels by Commodity (Contracts)**")
-                if not df_contracts.empty:
-                    commodity_totals = df_contracts.groupby('Commodity')['Bushels'].sum().sort_values(ascending=False)
-                    st.bar_chart(commodity_totals)
-            
-            with col2:
-                st.write("**Contracts by Status**")
-                if not df_contracts.empty:
-                    status_counts = df_contracts['Status'].value_counts()
-                    st.bar_chart(status_counts)
+        # Crop year selector
+        current_crop_year = get_current_crop_year()
+        selected_crop_year = st.selectbox(
+            "Crop Year",
+            options=list(range(current_crop_year - 5, current_crop_year + 2)),
+            index=5,  # Default to current crop year
+            format_func=lambda x: f"{x} (Oct 1, {x} - Sep 30, {x+1})"
+        )
         
-        # Settlements summary
-        filtered_settlements = [s for s in all_settlements if s.status != 'Header']
-        if filtered_settlements:
+        start_date, end_date = get_crop_year_date_range(selected_crop_year)
+        st.caption(f"Period: {start_date.strftime('%B %d, %Y')} to {end_date.strftime('%B %d, %Y')}")
+        
+        # Calculate sales data
+        sales_data = calculate_crop_year_sales(db, selected_crop_year)
+        
+        if not sales_data:
+            st.info("No data found for the selected crop year.")
+        else:
+            # Crop price inputs
+            st.markdown("### Crop Prices")
+            crop_prices = {}
+            crops = sorted(sales_data.keys())
+            
+            # Default prices
+            default_prices = {
+                'Corn': 4.0,
+                'Soybeans': 10.0
+            }
+            
+            price_cols = st.columns(min(4, len(crops)))
+            for idx, crop in enumerate(crops):
+                with price_cols[idx % 4]:
+                    default_price = default_prices.get(crop, 0.0)
+                    crop_prices[crop] = st.number_input(
+                        f"{crop} Price ($/bu)",
+                        min_value=0.0,
+                        value=default_price,
+                        step=0.01,
+                        key=f"price_{crop}_{selected_crop_year}"
+                    )
+            
+            # Calculate open revenue with prices
+            for crop in crops:
+                if crop in crop_prices:
+                    sales_data[crop]['open_revenue'] = sales_data[crop]['open_bushels'] * crop_prices[crop]
+            
             st.markdown("---")
-            st.subheader("Settlements Summary")
             
-            df_settlements = pd.DataFrame([{
-                'Settlement ID': s.settlement_ID or 'N/A',
-                'Contract #': s.contract_id or 'N/A',
-                'Bushels': s.bushels or 0,
-                'Price': s.price or 0,
-                'Date Delivered': s.date_delivered,
-                'Gross Amount': s.gross_amount or 0,
-                'Net Amount': s.net_amount or 0
-            } for s in filtered_settlements])
+            # Revenue Chart
+            revenue_data = []
+            total_sold_revenue = 0.0
+            total_contracted_revenue = 0.0
+            total_open_revenue = 0.0
             
-            col1, col2 = st.columns(2)
+            for crop in crops:
+                data = sales_data[crop]
+                sold = data['sold_revenue']
+                contracted = data['contracted_revenue']
+                open_rev = data['open_revenue']
+                
+                revenue_data.append({
+                    'Crop': crop,
+                    'Sold': sold,
+                    'Contracted': contracted,
+                    'Open': open_rev
+                })
+                
+                total_sold_revenue += sold
+                total_contracted_revenue += contracted
+                total_open_revenue += open_rev
             
-            with col1:
-                st.write("**Bushels Delivered by Settlement**")
-                if not df_settlements.empty:
-                    settlement_totals = df_settlements.groupby('Settlement ID')['Bushels'].sum().sort_values(ascending=False)
-                    st.bar_chart(settlement_totals)
+            if revenue_data:
+                # Add total row to the list (will be last)
+                revenue_data.append({
+                    'Crop': 'TOTAL',
+                    'Sold': total_sold_revenue,
+                    'Contracted': total_contracted_revenue,
+                    'Open': total_open_revenue
+                })
+                
+                # Create dataframe with crops first, then TOTAL
+                df_revenue = pd.DataFrame(revenue_data)
+                df_revenue = df_revenue.set_index('Crop')
+                
+                # Calculate totals for each row
+                df_revenue['Total'] = df_revenue['Sold'] + df_revenue['Contracted'] + df_revenue['Open']
+                
+                
+                # Create stacked horizontal bar chart - add in correct order: Sold, Contracted, Open
+                fig_revenue = go.Figure()
+                
+                # Add Sold first (leftmost in bar, first in legend)
+                fig_revenue.add_trace(go.Bar(
+                    name='Sold',
+                    y=df_revenue.index,
+                    x=df_revenue['Sold'],
+                    orientation='h',
+                    marker_color='#2ecc71',
+                    hovertemplate='Sold: $%{x:,.2f}<extra></extra>',
+                    legendrank=1,
+                    showlegend=True
+                ))
+                # Add Contracted second (middle in bar, second in legend)
+                fig_revenue.add_trace(go.Bar(
+                    name='Contracted',
+                    y=df_revenue.index,
+                    x=df_revenue['Contracted'],
+                    orientation='h',
+                    marker_color='#3498db',
+                    hovertemplate='Contracted: $%{x:,.2f}<extra></extra>',
+                    legendrank=2,
+                    showlegend=True
+                ))
+                # Add Open last (rightmost in bar, last in legend, shows total at end)
+                fig_revenue.add_trace(go.Bar(
+                    name='Open',
+                    y=df_revenue.index,
+                    x=df_revenue['Open'],
+                    orientation='h',
+                    marker_color='#e74c3c',
+                    customdata=df_revenue['Total'],
+                    hovertemplate='Open: $%{x:,.2f}<br>Total: $%{customdata:,.2f}<extra></extra>',
+                    legendrank=3,
+                    showlegend=True
+                ))
+                
+                # Reverse the order so TOTAL appears at bottom
+                category_array = list(df_revenue.index)
+                category_array.reverse()  # Reverse so TOTAL (last) appears at bottom
+                
+                fig_revenue.update_layout(
+                    barmode='stack',
+                    title='Revenue',
+                    xaxis_title='Revenue ($)',
+                    yaxis_title='',  # Remove crop label
+                    height=max(400, (len(crops) + 1) * 50),  # +1 for total row
+                    hovermode='y unified',
+                    hoverlabel=dict(
+                        bgcolor='white',
+                        bordercolor='black',
+                        font_size=12,
+                        namelength=-1
+                    ),
+                    yaxis=dict(categoryorder='array', categoryarray=category_array, showticklabels=True),
+                    legend=dict(
+                        traceorder='normal',
+                        itemclick=False,
+                        itemdoubleclick=False
+                    )
+                )
+                st.plotly_chart(fig_revenue, width='stretch')
             
-            with col2:
-                st.write("**Settlements Over Time**")
-                if not df_settlements.empty and df_settlements['Date Delivered'].notna().any():
-                    df_settlements['Date Delivered'] = pd.to_datetime(df_settlements['Date Delivered'])
-                    daily_settlements = df_settlements.groupby(df_settlements['Date Delivered'].dt.date)['Bushels'].sum()
-                    st.line_chart(daily_settlements)
+            st.markdown("---")
+            
+            # Bushels Chart
+            bushels_data = []
+            total_sold_bushels = 0
+            total_contracted_bushels = 0
+            total_open_bushels = 0
+            
+            for crop in crops:
+                data = sales_data[crop]
+                sold = data['sold_bushels']
+                contracted = data['contracted_bushels']
+                open_bu = data['open_bushels']
+                
+                bushels_data.append({
+                    'Crop': crop,
+                    'Sold': sold,
+                    'Contracted': contracted,
+                    'Open': open_bu
+                })
+                
+                total_sold_bushels += sold
+                total_contracted_bushels += contracted
+                total_open_bushels += open_bu
+            
+            if bushels_data:
+                # Add total row to the list (will be last)
+                bushels_data.append({
+                    'Crop': 'TOTAL',
+                    'Sold': total_sold_bushels,
+                    'Contracted': total_contracted_bushels,
+                    'Open': total_open_bushels
+                })
+                
+                # Create dataframe with crops first, then TOTAL
+                df_bushels = pd.DataFrame(bushels_data)
+                df_bushels = df_bushels.set_index('Crop')
+                
+                # Calculate totals for each row
+                df_bushels['Total'] = df_bushels['Sold'] + df_bushels['Contracted'] + df_bushels['Open']
+                
+                # Create stacked horizontal bar chart - add in correct order: Sold, Contracted, Open
+                fig_bushels = go.Figure()
+                
+                # Add Sold first (leftmost in bar, first in legend)
+                fig_bushels.add_trace(go.Bar(
+                    name='Sold',
+                    y=df_bushels.index,
+                    x=df_bushels['Sold'],
+                    orientation='h',
+                    marker_color='#2ecc71',
+                    hovertemplate='Sold: %{x:,.0f} bu<extra></extra>',
+                    legendrank=1,
+                    showlegend=True
+                ))
+                # Add Contracted second (middle in bar, second in legend)
+                fig_bushels.add_trace(go.Bar(
+                    name='Contracted',
+                    y=df_bushels.index,
+                    x=df_bushels['Contracted'],
+                    orientation='h',
+                    marker_color='#3498db',
+                    hovertemplate='Contracted: %{x:,.0f} bu<extra></extra>',
+                    legendrank=2,
+                    showlegend=True
+                ))
+                # Add Open last (rightmost in bar, last in legend, shows total at end)
+                fig_bushels.add_trace(go.Bar(
+                    name='Open',
+                    y=df_bushels.index,
+                    x=df_bushels['Open'],
+                    orientation='h',
+                    marker_color='#e74c3c',
+                    customdata=df_bushels['Total'],
+                    hovertemplate='Open: %{x:,.0f} bu<br><b>Total: %{customdata:,.0f} bu</b><extra></extra>',
+                    legendrank=3,
+                    showlegend=True
+                ))
+                
+                # Reverse the order so TOTAL appears at bottom
+                category_array = list(df_bushels.index)
+                category_array.reverse()  # Reverse so TOTAL (last) appears at bottom
+                
+                fig_bushels.update_layout(
+                    barmode='stack',
+                    title='Bushels',
+                    xaxis_title='Bushels',
+                    yaxis_title='',  # Remove crop label
+                    height=max(400, (len(crops) + 1) * 50),  # +1 for total row
+                    hovermode='y unified',
+                    hoverlabel=dict(
+                        bgcolor='white',
+                        bordercolor='black',
+                        font_size=12,
+                        namelength=-1
+                    ),
+                    yaxis=dict(categoryorder='array', categoryarray=category_array, showticklabels=True),
+                    legend=dict(
+                        traceorder='normal',
+                        itemclick=False,
+                        itemdoubleclick=False
+                    )
+                )
+                st.plotly_chart(fig_bushels, width='stretch')
     
     with tab2:
-        st.subheader("Contract Details")
-        
-        if filtered_contracts:
-            # Create DataFrame
-            df = pd.DataFrame([{
-                'Contract #': c.contract_number or 'N/A',
-                'Commodity': c.commodity or 'N/A',
-                'Bushels': f"{c.bushels or 0:,}",
-                'Price': f"${c.price or 0:.2f}",
-                'Basis': f"${c.basis or 0:.2f}",
-                'Status': c.status or 'N/A',
-                'Date Sold': c.date_sold or 'N/A',
-                'Buyer': c.buyer_name or 'N/A'
-            } for c in filtered_contracts])
-            
-            st.dataframe(df, height=400)
-        else:
-            st.info("No contracts match the selected filters.")
-    
-    with tab3:
-        st.subheader("Settlement Details")
-        
-        # Filter settlements (exclude header rows)
-        filtered_settlements = [s for s in all_settlements if s.status != 'Header']
-        
-        if filtered_settlements:
-            # Create DataFrame
-            df = pd.DataFrame([{
-                'Settlement ID': s.settlement_ID or 'N/A',
-                'Contract #': s.contract_id or 'N/A',
-                'Bushels': f"{s.bushels or 0:,.0f}",
-                'Price': f"${s.price or 0:.2f}",
-                'Date Delivered': s.date_delivered or 'N/A',
-                'Bin': s.bin or 'N/A',
-                'Buyer': s.buyer or 'N/A',
-                'Gross Amount': f"${s.gross_amount or 0:.2f}" if s.gross_amount else 'N/A',
-                'Net Amount': f"${s.net_amount or 0:.2f}" if s.net_amount else 'N/A',
-                'Adjustments': f"${s.adjustments or 0:.2f}" if s.adjustments else 'N/A',
-                'Status': s.status or 'N/A'
-            } for s in filtered_settlements])
-            
-            st.dataframe(df, height=400)
-            
-            # Summary statistics for settlements
-            st.subheader("Settlement Summary")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                total_bushels = sum(s.bushels or 0 for s in filtered_settlements)
-                st.metric("Total Bushels Delivered", f"{total_bushels:,.0f}")
-            
-            with col2:
-                total_gross = sum(s.gross_amount or 0 for s in filtered_settlements)
-                st.metric("Total Gross Amount", f"${total_gross:,.2f}")
-            
-            with col3:
-                total_net = sum(s.net_amount or 0 for s in filtered_settlements)
-                st.metric("Total Net Amount", f"${total_net:,.2f}")
-            
-            # Group by Settlement ID
-            if filtered_settlements:
-                settlement_groups = {}
-                for s in filtered_settlements:
-                    sid = s.settlement_ID or 'Unknown'
-                    if sid not in settlement_groups:
-                        settlement_groups[sid] = {
-                            'bushels': 0,
-                            'gross': 0,
-                            'net': 0,
-                            'count': 0
-                        }
-                    settlement_groups[sid]['bushels'] += s.bushels or 0
-                    settlement_groups[sid]['gross'] += s.gross_amount or 0
-                    settlement_groups[sid]['net'] += s.net_amount or 0
-                    settlement_groups[sid]['count'] += 1
-                
-                st.subheader("Summary by Settlement ID")
-                summary_df = pd.DataFrame([
-                    {
-                        'Settlement ID': sid,
-                        'Contracts': group['count'],
-                        'Total Bushels': f"{group['bushels']:,.0f}",
-                        'Total Gross': f"${group['gross']:,.2f}",
-                        'Total Net': f"${group['net']:,.2f}"
-                    }
-                    for sid, group in sorted(settlement_groups.items())
-                ])
-                st.dataframe(summary_df, width='stretch')
-        else:
-            st.info("No settlements found in database.")
-    
-    with tab4:
-        st.subheader("Interactive Charts")
-        
-        if filtered_contracts:
-            df = pd.DataFrame([{
-                'Contract': c.contract_number or 'N/A',
-                'Commodity': c.commodity or 'Unknown',
-                'Bushels': c.bushels or 0,
-                'Price': c.price or 0,
-                'Basis': c.basis or 0,
-                'Status': c.status or 'Unknown',
-                'Date Sold': c.date_sold
-            } for c in filtered_contracts])
-            
-            if not df.empty:
-                # Chart 1: Bushels by Commodity (Bar)
-                fig1 = px.bar(
-                    df.groupby('Commodity')['Bushels'].sum().reset_index(),
-                    x='Commodity',
-                    y='Bushels',
-                    title='Total Bushels by Commodity',
-                    color='Bushels',
-                    color_continuous_scale='Viridis'
-                )
-                st.plotly_chart(fig1, width='stretch')
-                
-                # Chart 2: Price vs Bushels (Scatter)
-                if df['Price'].notna().any() and df['Bushels'].notna().any():
-                    fig2 = px.scatter(
-                        df,
-                        x='Bushels',
-                        y='Price',
-                        color='Commodity',
-                        size='Bushels',
-                        hover_data=['Contract'],
-                        title='Price vs Bushels',
-                        labels={'Price': 'Price per Bushel ($)', 'Bushels': 'Bushels'}
-                    )
-                    st.plotly_chart(fig2, width='stretch')
-                
-                # Chart 3: Status Distribution (Pie)
-                status_counts = df['Status'].value_counts()
-                fig3 = px.pie(
-                    values=status_counts.values,
-                    names=status_counts.index,
-                    title='Contracts by Status'
-                )
-                st.plotly_chart(fig3, width='stretch')
-                
-                # Chart 4: Contracts Over Time
-                if 'Date Sold' in df.columns and df['Date Sold'].notna().any():
-                    df['Date Sold'] = pd.to_datetime(df['Date Sold'])
-                    daily = df.groupby(df['Date Sold'].dt.date).size().reset_index()
-                    daily.columns = ['Date', 'Count']
-                    fig4 = px.line(
-                        daily,
-                        x='Date',
-                        y='Count',
-                        title='Contracts Over Time',
-                        markers=True
-                    )
-                    st.plotly_chart(fig4, width='stretch')
-        else:
-            st.info("No contracts to display.")
-    
-    with tab5:
         st.subheader("Export Data")
         
         col1, col2 = st.columns(2)
@@ -480,7 +495,7 @@ def main():
                     wb = Workbook()
                     
                     # Contracts sheet
-                    if filtered_contracts:
+                    if all_contracts:
                         ws_contracts = wb.active
                         ws_contracts.title = "Contracts"
                         headers = ['Contract #', 'Commodity', 'Bushels', 'Price', 'Basis', 'Status', 'Date Sold', 'Buyer']
@@ -494,9 +509,9 @@ def main():
                             cell.font = header_font
                             cell.alignment = Alignment(horizontal='center')
                         
-                        for c in filtered_contracts:
+                        for c in all_contracts:
                             ws_contracts.append([
-                                c.contract_number, c.commodity, c.bushels, c.price, 
+                                c.contract_number, normalize_commodity_name(db, c.commodity), c.bushels, c.price, 
                                 c.basis, c.status, c.date_sold, c.buyer_name
                             ])
                     
@@ -545,17 +560,17 @@ def main():
                     st.write("**Export Options:**")
                     
                     # Contracts CSV
-                    if filtered_contracts:
+                    if all_contracts:
                         df_contracts = pd.DataFrame([{
                             'Contract #': c.contract_number,
-                            'Commodity': c.commodity,
+                            'Commodity': normalize_commodity_name(db, c.commodity),
                             'Bushels': c.bushels,
                             'Price': c.price,
                             'Basis': c.basis,
                             'Status': c.status,
                             'Date Sold': c.date_sold,
                             'Buyer': c.buyer_name
-                        } for c in filtered_contracts])
+                        } for c in all_contracts])
                         
                         csv_contracts = df_contracts.to_csv(index=False)
                         st.download_button(
@@ -590,7 +605,7 @@ def main():
                             mime="text/csv"
                         )
                     
-                    if not filtered_contracts and not filtered_settlements:
+                    if not all_contracts and not filtered_settlements:
                         st.warning("No data to export.")
                 except Exception as e:
                     st.error(f"Error exporting to CSV: {e}")

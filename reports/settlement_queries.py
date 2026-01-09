@@ -49,3 +49,14 @@ def get_unique_settlement_ids(db: Session) -> List[str]:
     return [r[0] for r in results if r[0] is not None]
 
 
+
+
+
+
+
+
+
+
+
+
+
