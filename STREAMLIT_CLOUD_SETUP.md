@@ -1,160 +1,401 @@
 # Streamlit Cloud Setup Guide
 
-This guide will help you deploy your Bushel Management Dashboard to Streamlit Cloud for free!
+**Status: ✅ Setup Complete** (as of January 2026)
 
-## ?? Quick Setup (5 minutes)
+This guide documents the Streamlit Cloud deployment setup for the Bushel Management Dashboard.
 
-### Step 1: Prepare Your Code
+## 📋 Current Setup Status
 
-Your code is already ready! The following files are needed:
-- ? `dashboard_app.py` - Main dashboard application
-- ? `requirements.txt` - All dependencies (already updated)
-- ? `database/` folder - Database connection files
-- ? `reports/` folder - Query functions
-- ? `.streamlit/config.toml` - Streamlit configuration (already created)
+✅ **Repository:** https://github.com/dgableman/bushel-management-dashboard  
+✅ **GitHub Username:** `dgableman`  
+✅ **Authentication:** Personal Access Token (PAT) configured  
+✅ **Database:** Included in repository at `data/bushel_management.db`  
+✅ **Streamlit Secrets:** Supported (configured in `dashboard_app.py`)  
+✅ **Remote URL:** `https://github.com/dgableman/bushel-management-dashboard.git`
 
-### Step 2: Push to GitHub
+---
 
-1. **Create a GitHub repository** (if you don't have one):
-   - Go to https://github.com/new
-   - Name it something like `bushel-management-dashboard`
-   - Make it **Public** (required for free Streamlit Cloud)
-   - Click "Create repository"
+## 🚀 Initial Setup (Completed - For Reference)
 
-2. **Push your code to GitHub**:
+### Step 1: Repository Setup
+
+1. **Created GitHub repository:**
+   - Repository: `bushel-management-dashboard`
+   - URL: https://github.com/dgableman/bushel-management-dashboard
+   - Visibility: Public (required for free Streamlit Cloud)
+
+2. **Configured Git remote:**
    ```bash
-   cd /path/to/Bushel_Management_Reports
-   git init
-   git add .
-   git commit -m "Initial commit - Bushel Management Dashboard"
-   git branch -M main
-   git remote add origin https://github.com/YOUR_USERNAME/bushel-management-dashboard.git
-   git push -u origin main
+   git remote add origin https://github.com/dgableman/bushel-management-dashboard.git
    ```
 
-   **Or use GitHub Desktop/GitHub web interface** to upload your files.
+### Step 2: GitHub Authentication Setup
 
-### Step 3: Deploy to Streamlit Cloud
+**Username:** `dgableman`
 
-1. **Sign up for Streamlit Cloud**:
-   - Go to https://share.streamlit.io/
-   - Click "Sign up" and connect your GitHub account
-   - Authorize Streamlit Cloud to access your repositories
+**Authentication Method:** Personal Access Token (PAT)
 
-2. **Create a new app**:
-   - Click "New app" button
-   - Select your repository: `bushel-management-dashboard`
-   - Select branch: `main`
-   - Main file path: `dashboard_app.py`
+1. **Created Personal Access Token:**
+   - Go to: https://github.com/settings/tokens
+   - Generate new token (classic)
+   - Scope: `repo` (full control of private repositories)
+   - Copy token immediately (only shown once)
+
+2. **Using the token:**
+   - When prompted for password during `git push`, use the Personal Access Token
+   - Username: `dgableman`
+   - Password: `[your Personal Access Token]`
+
+3. **Optional - Store credentials:**
+   ```bash
+   git config --global credential.helper store
+   ```
+   This saves your credentials so you don't need to enter them each time.
+
+### Step 3: Database Configuration
+
+**Method Used:** Option 1 - Database included in repository
+
+1. **Configured `.gitignore`:**
+   - Added exception: `!data/bushel_management.db`
+   - This allows the database file to be committed while ignoring other `.db` files
+
+2. **Database location:**
+   - Path: `data/bushel_management.db`
+   - Committed to repository
+   - Automatically deployed with code
+
+**⚠️ Note:** The database is public in the repository. Consider using Streamlit Secrets (Option 2) if data becomes sensitive.
+
+### Step 4: Code Deployment
+
+1. **Committed initial setup:**
+   ```bash
+   git add dashboard_app.py database/models.py reports/*.py data/bushel_management.db
+   git commit -m "Add Crop Year Sales tab with commodity normalization"
+   ```
+
+2. **Key files included:**
+   - `dashboard_app.py` - Main Streamlit application
+   - `requirements.txt` - Python dependencies
+   - `database/` - Database models and connection
+   - `reports/` - Query functions and utilities
+   - `data/bushel_management.db` - Database file
+   - `.streamlit/config.toml` - Streamlit configuration
+
+3. **Push to GitHub:**
+   ```bash
+   git push origin main
+   ```
+   (Requires authentication with username `dgableman` and Personal Access Token)
+
+### Step 5: Streamlit Cloud Deployment
+
+1. **Sign up/Login:**
+   - Go to: https://share.streamlit.io/
+   - Connect GitHub account (`dgableman`)
+
+2. **Create new app:**
+   - Repository: `dgableman/bushel-management-dashboard`
+   - Branch: `main`
+   - Main file: `dashboard_app.py`
    - Click "Deploy"
 
-3. **Wait for deployment** (usually 1-2 minutes)
+3. **App URL:**
+   - Format: `https://bushel-management-dashboard.streamlit.app`
+   - (Or custom URL if configured)
 
-4. **Get your URL**:
-   - Once deployed, you'll get a URL like: `https://bushel-management-dashboard.streamlit.app`
-   - **Bookmark this URL!** This is your permanent dashboard link.
+---
 
-## ?? Database Setup Options
+## 🔄 Future Updates - Different Workflows
 
-Your dashboard needs access to the database file. Here are your options:
+### Workflow 1: Code Changes Only (Most Common)
 
-### Option 1: Include Database in Repository (Easiest)
+**When:** Making changes to Python code, adding features, fixing bugs
 
-1. **Temporarily allow database files in git:**
-   - Edit `.gitignore` and comment out or remove the `*.db` line
-   - Or add an exception: `!data/bushel_management.db`
-
-2. **Copy your database file:**
+**Steps:**
+1. Make changes to your code locally
+2. Stage changes:
    ```bash
-   # Create data folder if it doesn't exist
-   mkdir -p data
-   # Copy your database file
-   cp /path/to/your/bushel_management.db data/bushel_management.db
+   git add <changed_files>
+   # Or stage all changes:
+   git add .
+   ```
+3. Commit changes:
+   ```bash
+   git commit -m "Description of changes"
+   ```
+4. Push to GitHub:
+   ```bash
+   git push origin main
+   ```
+   - Username: `dgableman`
+   - Password: Your Personal Access Token
+5. **Streamlit Cloud automatically redeploys** (takes 1-2 minutes)
+6. Verify at your Streamlit Cloud URL
+
+**Example:**
+```bash
+git add dashboard_app.py reports/crop_year_sales.py
+git commit -m "Update chart colors and hover information"
+git push origin main
+```
+
+### Workflow 2: Database Update
+
+**When:** Database file has been updated from the main Bushel_Management project
+
+**Steps:**
+1. **Copy updated database:**
+   ```bash
+   # From the main Bushel_Management project
+   cp /path/to/Bushel_Management/data/bushel_management.db \
+      /path/to/Bushel_Management_Reports/data/bushel_management.db
    ```
 
-3. **Commit and push:**
+2. **Verify database file exists:**
+   ```bash
+   ls -lh data/bushel_management.db
+   ```
+
+3. **Stage and commit:**
    ```bash
    git add data/bushel_management.db
-   git commit -m "Add database file"
-   git push
+   git commit -m "Update database from main project"
    ```
 
-4. The dashboard will automatically find it at `data/bushel_management.db`
-
-**⚠️ Important:** This makes your database public (since the repo is public). Only use this if your data is not sensitive or if you're okay with public data.
-
-### Option 2: Use Streamlit Secrets (Recommended for Production)
-
-1. In Streamlit Cloud, go to your app settings
-2. Click "Secrets" tab
-3. Add your database path or connection string:
-   ```toml
-   DB_PATH = "/path/to/your/database.db"
-   ```
-4. Update `dashboard_app.py` to read from secrets:
-   ```python
-   DB_PATH = st.secrets.get("DB_PATH", "data/bushel_management.db")
+4. **Push to GitHub:**
+   ```bash
+   git push origin main
    ```
 
-### Option 3: Host Database Separately
+5. **Streamlit Cloud will redeploy** with the new database
 
-- Upload database to Google Drive and access via API
-- Use a cloud database service (SQLite Cloud, etc.)
-- Set DB_PATH via Streamlit secrets
+**⚠️ Note:** If database file is large (>100MB), consider using Streamlit Secrets instead (see Option 2 below).
 
-## ? After Deployment
+### Workflow 3: Adding New Dependencies
 
-Once deployed, you can:
-- ? Open your dashboard anytime at your Streamlit Cloud URL
-- ? Share the URL with others (they can view your dashboard)
-- ? Push code changes to GitHub ? Streamlit Cloud auto-updates
-- ? No more clicking through Colab cells!
+**When:** Adding new Python packages
 
-## ?? Updating Your Dashboard
+**Steps:**
+1. Install package locally:
+   ```bash
+   pip install <package_name>
+   ```
 
-1. Make changes to your code locally
-2. Push to GitHub: `git push`
-3. Streamlit Cloud automatically redeploys (usually takes 1-2 minutes)
-4. Your dashboard updates automatically!
+2. Update `requirements.txt`:
+   ```bash
+   pip freeze > requirements.txt
+   # Or manually edit requirements.txt to add the package
+   ```
 
-## ?? Troubleshooting
+3. Commit and push:
+   ```bash
+   git add requirements.txt
+   git commit -m "Add new dependency: <package_name>"
+   git push origin main
+   ```
 
-### App won't deploy
-- Check that `requirements.txt` includes all dependencies
-- Make sure `dashboard_app.py` is in the root of your repo
-- Check the deployment logs in Streamlit Cloud
+4. Streamlit Cloud will install the new dependency and redeploy
 
-### Database not found
-- Verify database file is in `data/` folder (if using Option 1)
-- Check that DB_PATH is set correctly in secrets (if using Option 2)
-- Check deployment logs for path errors
+### Workflow 4: Database Schema Changes
 
-### Import errors
-- Make sure `database/` and `reports/` folders are in your repo
-- Verify all `__init__.py` files are present
-- Check `requirements.txt` has all packages
+**When:** Database structure changes (new tables, columns, etc.)
 
-## ?? Files Needed in GitHub Repo
+**Steps:**
+1. **Update SQLAlchemy models** in `database/models.py`:
+   - Add new model classes
+   - Update existing models with new columns
+   - Ensure models match actual database schema
+
+2. **Test locally:**
+   ```bash
+   streamlit run dashboard_app.py
+   ```
+   Verify everything works with the updated schema
+
+3. **Update database file** (see Workflow 2)
+
+4. **Update code** that uses the new schema
+
+5. **Commit all changes:**
+   ```bash
+   git add database/models.py dashboard_app.py reports/*.py data/bushel_management.db
+   git commit -m "Update models for new database schema"
+   git push origin main
+   ```
+
+### Workflow 5: Using Streamlit Secrets (Alternative Database Method)
+
+**When:** Database file is too large for GitHub, or data is sensitive
+
+**Steps:**
+1. **Upload database to cloud storage:**
+   - Google Drive (get shareable link)
+   - Dropbox, AWS S3, etc.
+
+2. **Configure Streamlit Secrets:**
+   - In Streamlit Cloud: Go to app → Settings → Secrets
+   - Add:
+     ```toml
+     DB_PATH = "https://drive.google.com/uc?export=download&id=YOUR_FILE_ID"
+     ```
+   - Or for absolute path:
+     ```toml
+     DB_PATH = "/mount/src/bushel-management-dashboard/data/bushel_management.db"
+     ```
+
+3. **Code already supports secrets!**
+   - `dashboard_app.py` automatically checks `st.secrets.get("DB_PATH")`
+   - No code changes needed
+
+4. **Update `.gitignore`:**
+   - Remove database file from repository:
+     ```bash
+     git rm --cached data/bushel_management.db
+     git commit -m "Remove database from repo, using Streamlit secrets"
+     ```
+
+---
+
+## 📁 Repository Structure
 
 ```
 bushel-management-dashboard/
-??? dashboard_app.py          ? Main app (required)
-??? requirements.txt          ? Dependencies (required)
-??? .streamlit/
-?   ??? config.toml          ? Streamlit config (optional but recommended)
-??? data/
-?   ??? bushel_management.db ? Database file (if using Option 1)
-??? database/
-?   ??? __init__.py
-?   ??? db_connection.py
-?   ??? models.py
-??? reports/
-    ??? __init__.py
-    ??? contract_queries.py
-    ??? settlement_queries.py
-    ??? bin_queries.py
+├── dashboard_app.py              # Main Streamlit application ✅
+├── requirements.txt              # Python dependencies ✅
+├── .streamlit/
+│   └── config.toml              # Streamlit configuration ✅
+├── data/
+│   └── bushel_management.db     # Database file ✅
+├── database/
+│   ├── __init__.py              ✅
+│   ├── db_connection.py         ✅
+│   └── models.py                ✅
+└── reports/
+    ├── __init__.py              ✅
+    ├── contract_queries.py      ✅
+    ├── settlement_queries.py    ✅
+    ├── bin_queries.py           ✅
+    ├── commodity_utils.py       ✅ (New)
+    ├── crop_year_sales.py       ✅ (New)
+    └── crop_year_utils.py       ✅ (New)
 ```
 
-## ?? That's It!
+---
 
-Once set up, you'll have a permanent URL that you can bookmark and open anytime. No more Colab cells, no more ngrok, just a simple URL!
+## 🔍 Verification & Troubleshooting
+
+### Check Deployment Status
+
+1. **GitHub Repository:**
+   - Visit: https://github.com/dgableman/bushel-management-dashboard
+   - Verify latest commit is pushed
+   - Check that `data/bushel_management.db` exists
+
+2. **Streamlit Cloud:**
+   - Go to: https://share.streamlit.io/
+   - Check app status (should show "Running")
+   - View deployment logs if needed
+
+3. **Dashboard:**
+   - Open your Streamlit Cloud URL
+   - Check sidebar "Settings" expander
+   - Verify database path is correct
+   - Check that data loads correctly
+
+### Common Issues
+
+#### Push Authentication Failed
+- **Error:** `fatal: could not read Username`
+- **Solution:** 
+  - Username: `dgableman`
+  - Password: Use Personal Access Token (not GitHub password)
+  - Create token at: https://github.com/settings/tokens
+
+#### Database Not Found
+- **Check:** Dashboard sidebar → Settings → Verify database path
+- **Verify:** Database exists in GitHub at `data/bushel_management.db`
+- **Fix:** Update database (Workflow 2) or configure Streamlit Secrets
+
+#### Deployment Fails
+- **Check:** Streamlit Cloud deployment logs
+- **Common causes:**
+  - Missing dependencies in `requirements.txt`
+  - Syntax errors in code
+  - Import errors (missing `__init__.py` files)
+
+#### Import Errors
+- **Verify:** All `__init__.py` files exist in `database/` and `reports/` folders
+- **Check:** `requirements.txt` includes all packages
+- **Test:** Run locally first: `streamlit run dashboard_app.py`
+
+---
+
+## 📝 Quick Reference
+
+### Git Commands
+
+```bash
+# Check status
+git status
+
+# Stage all changes
+git add .
+
+# Stage specific files
+git add dashboard_app.py reports/new_file.py
+
+# Commit changes
+git commit -m "Description of changes"
+
+# Push to GitHub
+git push origin main
+
+# View commit history
+git log --oneline
+
+# Check remote
+git remote -v
+```
+
+### Common Update Patterns
+
+**Quick code fix:**
+```bash
+# Edit file, then:
+git add dashboard_app.py
+git commit -m "Fix bug in crop year calculation"
+git push origin main
+```
+
+**Database update:**
+```bash
+cp ../Bushel_Management/data/bushel_management.db data/
+git add data/bushel_management.db
+git commit -m "Update database"
+git push origin main
+```
+
+**Multiple file update:**
+```bash
+git add dashboard_app.py reports/*.py database/models.py
+git commit -m "Add new feature and update models"
+git push origin main
+```
+
+---
+
+## 🎯 Summary
+
+✅ **Setup is complete and working**  
+✅ **Repository:** `dgableman/bushel-management-dashboard`  
+✅ **Authentication:** Personal Access Token configured  
+✅ **Database:** Included in repository at `data/bushel_management.db`  
+
+**For future updates:**
+- Code changes: Edit → Commit → Push → Auto-deploy
+- Database updates: Copy → Commit → Push → Auto-deploy
+- New dependencies: Update `requirements.txt` → Commit → Push → Auto-deploy
+
+Streamlit Cloud automatically redeploys when you push to the `main` branch!
