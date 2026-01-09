@@ -21,7 +21,8 @@ ENV/
 
 # Database files (don't commit the actual database)
 *.db
-!data/bushel_management.db  # Exception: allow this specific database file for Streamlit Cloud
+!data/bushel_management.db  # Exception: allow default database file
+!data/*_bushel_management.db  # Exception: allow username-specific database files for Streamlit Cloud
 *.sqlite
 *.sqlite3
 
