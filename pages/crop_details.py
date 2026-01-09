@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from reports.contract_queries import get_all_contracts
 from reports.settlement_queries import get_all_settlements
 from reports.crop_year_utils import get_current_crop_year, get_crop_year_date_range
+from reports.commodity_utils import normalize_commodity_name
 from dashboard_app import get_drilldown_details, get_database_session
 
 # Page config
@@ -72,6 +73,23 @@ def main():
         
         if status == 'Sold':
             if details['settlements']:
+                # Calculate totals and average price
+                total_bushels = sum(s.get('bushels', 0) for s in details['settlements'])
+                total_revenue = sum(
+                    s.get('net_amount', 0) if s.get('net_amount') else s.get('gross_amount', 0)
+                    for s in details['settlements']
+                )
+                avg_price = total_revenue / total_bushels if total_bushels > 0 else 0.0
+                
+                # Display summary with average price
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Bushels", f"{total_bushels:,.0f} bu")
+                with col2:
+                    st.metric("Total Revenue", f"${total_revenue:,.0f}")
+                with col3:
+                    st.metric("Avg Price/Bu", f"${avg_price:.2f}")
+                st.markdown("---")
                 # Create DataFrame for settlements
                 settlement_data = []
                 for s in details['settlements']:
@@ -116,6 +134,20 @@ def main():
         
         elif status == 'Contracted':
             if details['contracts']:
+                # Calculate totals and average price
+                total_bushels = sum(c.get('remaining_bushels', 0) for c in details['contracts'])
+                total_revenue = sum(c.get('remaining_revenue', 0) for c in details['contracts'])
+                avg_price = total_revenue / total_bushels if total_bushels > 0 else 0.0
+                
+                # Display summary with average price
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Remaining Bushels", f"{total_bushels:,.0f} bu")
+                with col2:
+                    st.metric("Total Remaining Revenue", f"${total_revenue:,.0f}")
+                with col3:
+                    st.metric("Avg Price/Bu", f"${avg_price:.2f}")
+                st.markdown("---")
                 # Create DataFrame for contracts
                 contract_data = []
                 for c in details['contracts']:
@@ -163,11 +195,48 @@ def main():
         elif status == 'Open':
             if 'summary' in details:
                 summary = details['summary']
-                st.markdown("**Open Bushels Summary:**")
-                st.markdown(f"- **Starting Bushels:** {summary['starting_bushels']:,.0f} bu")
-                st.markdown(f"- **Sold Bushels:** {summary['sold_bushels']:,.0f} bu")
-                st.markdown(f"- **Contracted Bushels:** {summary['contracted_bushels']:,.0f} bu")
-                st.markdown(f"- **Open Bushels:** {summary['open_bushels']:,.0f} bu")
+                
+                # Calculate average price from contracts for this crop (if available)
+                # This gives an estimate - actual price is set on the main page
+                avg_price = 0.0
+                contract_prices = []
+                for contract in all_contracts:
+                    if contract.commodity:
+                        normalized = normalize_commodity_name(db, contract.commodity)
+                        if normalized == crop and contract.price and contract.price > 0:
+                            contract_prices.append(contract.price)
+                
+                if contract_prices:
+                    avg_price = sum(contract_prices) / len(contract_prices)
+                    open_revenue = summary['open_bushels'] * avg_price
+                else:
+                    open_revenue = 0.0
+                
+                # Display summary with average price
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Starting Bushels", f"{summary['starting_bushels']:,.0f} bu")
+                with col2:
+                    st.metric("Sold Bushels", f"{summary['sold_bushels']:,.0f} bu")
+                with col3:
+                    st.metric("Contracted Bushels", f"{summary['contracted_bushels']:,.0f} bu")
+                
+                col4, col5, col6 = st.columns(3)
+                with col4:
+                    st.metric("Open Bushels", f"{summary['open_bushels']:,.0f} bu")
+                with col5:
+                    if avg_price > 0:
+                        st.metric("Est. Avg Price/Bu", f"${avg_price:.2f}", 
+                                 help="Estimated from existing contracts. Set actual price on main page.")
+                        st.metric("Est. Open Revenue", f"${open_revenue:,.0f}")
+                    else:
+                        st.metric("Avg Price/Bu", "N/A", 
+                                 help="Set crop price on main Crop Year Sales page")
+                with col6:
+                    st.markdown("")
+                    
+                if avg_price == 0:
+                    st.info("💡 To calculate open revenue, set the crop price on the main 'Crop Year Sales' page.")
             else:
                 st.info("Summary information not available.")
         st.markdown("---")

@@ -85,7 +85,7 @@ if PROJECT_PATH not in sys.path:
 from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
-from reports.bin_queries import get_bins_with_storage_by_crop
+from reports.bin_queries import get_bins_with_storage_by_crop, get_bins_with_storage_by_location
 from reports.commodity_utils import (
     normalize_commodity_name,
     get_commodities_for_normalized_name,
@@ -621,7 +621,7 @@ def main():
             st.info("No data found for the selected crop year.")
         else:
             # Crop price inputs
-            st.markdown("### Crop Prices")
+            st.markdown("### Crop Prices - estimate for current price")
             crop_prices = {}
             crops = sorted(sales_data.keys())
             
@@ -652,23 +652,35 @@ def main():
             total_sold_revenue = 0.0
             total_contracted_revenue = 0.0
             total_open_revenue = 0.0
+            total_sold_bushels = 0
+            total_contracted_bushels = 0
+            total_open_bushels = 0
             
             for crop in crops:
                 data = sales_data[crop]
-                sold = data['sold_revenue']
-                contracted = data['contracted_revenue']
+                sold_rev = data['sold_revenue']
+                contracted_rev = data['contracted_revenue']
                 open_rev = data['open_revenue']
+                sold_bu = data['sold_bushels']
+                contracted_bu = data['contracted_bushels']
+                open_bu = data['open_bushels']
                 
                 revenue_data.append({
                     'Crop': crop,
-                    'Sold': sold,
-                    'Contracted': contracted,
-                    'Open': open_rev
+                    'Sold': sold_rev,
+                    'Contracted': contracted_rev,
+                    'Open': open_rev,
+                    'Sold_Bushels': sold_bu,
+                    'Contracted_Bushels': contracted_bu,
+                    'Open_Bushels': open_bu
                 })
                 
-                total_sold_revenue += sold
-                total_contracted_revenue += contracted
+                total_sold_revenue += sold_rev
+                total_contracted_revenue += contracted_rev
                 total_open_revenue += open_rev
+                total_sold_bushels += sold_bu
+                total_contracted_bushels += contracted_bu
+                total_open_bushels += open_bu
             
             if revenue_data:
                 # Add total row to the list (will be last)
@@ -676,7 +688,10 @@ def main():
                     'Crop': 'TOTAL',
                     'Sold': total_sold_revenue,
                     'Contracted': total_contracted_revenue,
-                    'Open': total_open_revenue
+                    'Open': total_open_revenue,
+                    'Sold_Bushels': total_sold_bushels,
+                    'Contracted_Bushels': total_contracted_bushels,
+                    'Open_Bushels': total_open_bushels
                 })
                 
                 # Create dataframe with crops first, then TOTAL
@@ -686,6 +701,39 @@ def main():
                 # Calculate totals for each row
                 df_revenue['Total'] = df_revenue['Sold'] + df_revenue['Contracted'] + df_revenue['Open']
                 
+                # Calculate average prices per bushel
+                df_revenue['Avg_Price_Sold'] = df_revenue.apply(
+                    lambda row: row['Sold'] / row['Sold_Bushels'] if row['Sold_Bushels'] > 0 else 0.0, axis=1
+                )
+                df_revenue['Avg_Price_Contracted'] = df_revenue.apply(
+                    lambda row: row['Contracted'] / row['Contracted_Bushels'] if row['Contracted_Bushels'] > 0 else 0.0, axis=1
+                )
+                df_revenue['Avg_Price_Open'] = df_revenue.apply(
+                    lambda row: row['Open'] / row['Open_Bushels'] if row['Open_Bushels'] > 0 else 0.0, axis=1
+                )
+                
+                # Calculate percentages for each segment (relative to total for that crop)
+                df_revenue['Pct_Sold'] = df_revenue.apply(
+                    lambda row: (row['Sold'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                df_revenue['Pct_Contracted'] = df_revenue.apply(
+                    lambda row: (row['Contracted'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                df_revenue['Pct_Open'] = df_revenue.apply(
+                    lambda row: (row['Open'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                
+                # Format percentage text (only show if >= 1% to avoid cluttering)
+                # Round to whole numbers and format as "xx%"
+                df_revenue['Text_Sold'] = df_revenue.apply(
+                    lambda row: f"{int(round(row['Pct_Sold']))}%" if row['Pct_Sold'] >= 1.0 else "", axis=1
+                )
+                df_revenue['Text_Contracted'] = df_revenue.apply(
+                    lambda row: f"{int(round(row['Pct_Contracted']))}%" if row['Pct_Contracted'] >= 1.0 else "", axis=1
+                )
+                df_revenue['Text_Open'] = df_revenue.apply(
+                    lambda row: f"{int(round(row['Pct_Open']))}%" if row['Pct_Open'] >= 1.0 else "", axis=1
+                )
                 
                 # Create stacked horizontal bar chart - add in correct order: Sold, Contracted, Open
                 fig_revenue = go.Figure()
@@ -697,7 +745,12 @@ def main():
                     x=df_revenue['Sold'],
                     orientation='h',
                     marker_color='#2ecc71',
-                    hovertemplate='Sold: $%{x:,.0f}<extra></extra>',
+                    customdata=df_revenue[['Sold_Bushels', 'Avg_Price_Sold']].values,
+                    text=df_revenue['Text_Sold'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='black', size=18, family='Arial Black'),
+                    hovertemplate='Sold: $%{x:,.0f}<br>Bushels: %{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
                     legendrank=1,
                     showlegend=True
                 ))
@@ -708,10 +761,21 @@ def main():
                     x=df_revenue['Contracted'],
                     orientation='h',
                     marker_color='#3498db',
-                    hovertemplate='Contracted: $%{x:,.0f}<extra></extra>',
+                    customdata=df_revenue[['Contracted_Bushels', 'Avg_Price_Contracted']].values,
+                    text=df_revenue['Text_Contracted'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='white', size=18, family='Arial Black'),
+                    hovertemplate='Contracted: $%{x:,.0f}<br>Bushels: %{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
                     legendrank=2,
                     showlegend=True
                 ))
+                # Calculate total average price (Total Revenue / Total Bushels) for hover
+                df_revenue['Total_Bushels'] = df_revenue['Sold_Bushels'] + df_revenue['Contracted_Bushels'] + df_revenue['Open_Bushels']
+                df_revenue['Avg_Price_Total'] = df_revenue.apply(
+                    lambda row: row['Total'] / row['Total_Bushels'] if row['Total_Bushels'] > 0 else 0.0, axis=1
+                )
+                
                 # Add Open last (rightmost in bar, last in legend, shows total at end)
                 fig_revenue.add_trace(go.Bar(
                     name='Open',
@@ -719,8 +783,12 @@ def main():
                     x=df_revenue['Open'],
                     orientation='h',
                     marker_color='#e74c3c',
-                    customdata=df_revenue['Total'],
-                    hovertemplate='Open: $%{x:,.0f}<br>Total: $%{customdata:,.0f}<extra></extra>',
+                    customdata=df_revenue[['Total', 'Open_Bushels', 'Avg_Price_Open', 'Total_Bushels', 'Avg_Price_Total']].values,
+                    text=df_revenue['Text_Open'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='white', size=18, family='Arial Black'),
+                    hovertemplate='Open: $%{x:,.0f}<br>Bushels: %{customdata[1]:,.0f}<br>Avg Price: $%{customdata[2]:.2f}/bu<br>━━━━━━━━━━━━━━━━<br>Total: $%{customdata[0]:,.0f}<br>Total Bushels: %{customdata[3]:,.0f}<br>Avg Price: $%{customdata[4]:.2f}/bu<extra></extra>',
                     legendrank=3,
                     showlegend=True
                 ))
@@ -848,23 +916,35 @@ def main():
             total_sold_bushels = 0
             total_contracted_bushels = 0
             total_open_bushels = 0
+            total_sold_revenue_bushels = 0.0
+            total_contracted_revenue_bushels = 0.0
+            total_open_revenue_bushels = 0.0
             
             for crop in crops:
                 data = sales_data[crop]
-                sold = data['sold_bushels']
-                contracted = data['contracted_bushels']
+                sold_bu = data['sold_bushels']
+                contracted_bu = data['contracted_bushels']
                 open_bu = data['open_bushels']
+                sold_rev = data['sold_revenue']
+                contracted_rev = data['contracted_revenue']
+                open_rev = data['open_revenue']
                 
                 bushels_data.append({
                     'Crop': crop,
-                    'Sold': sold,
-                    'Contracted': contracted,
-                    'Open': open_bu
+                    'Sold': sold_bu,
+                    'Contracted': contracted_bu,
+                    'Open': open_bu,
+                    'Sold_Revenue': sold_rev,
+                    'Contracted_Revenue': contracted_rev,
+                    'Open_Revenue': open_rev
                 })
                 
-                total_sold_bushels += sold
-                total_contracted_bushels += contracted
+                total_sold_bushels += sold_bu
+                total_contracted_bushels += contracted_bu
                 total_open_bushels += open_bu
+                total_sold_revenue_bushels += sold_rev
+                total_contracted_revenue_bushels += contracted_rev
+                total_open_revenue_bushels += open_rev
             
             if bushels_data:
                 # Add total row to the list (will be last)
@@ -872,7 +952,10 @@ def main():
                     'Crop': 'TOTAL',
                     'Sold': total_sold_bushels,
                     'Contracted': total_contracted_bushels,
-                    'Open': total_open_bushels
+                    'Open': total_open_bushels,
+                    'Sold_Revenue': total_sold_revenue_bushels,
+                    'Contracted_Revenue': total_contracted_revenue_bushels,
+                    'Open_Revenue': total_open_revenue_bushels
                 })
                 
                 # Create dataframe with crops first, then TOTAL
@@ -881,6 +964,40 @@ def main():
                 
                 # Calculate totals for each row
                 df_bushels['Total'] = df_bushels['Sold'] + df_bushels['Contracted'] + df_bushels['Open']
+                
+                # Calculate average prices per bushel
+                df_bushels['Avg_Price_Sold'] = df_bushels.apply(
+                    lambda row: row['Sold_Revenue'] / row['Sold'] if row['Sold'] > 0 else 0.0, axis=1
+                )
+                df_bushels['Avg_Price_Contracted'] = df_bushels.apply(
+                    lambda row: row['Contracted_Revenue'] / row['Contracted'] if row['Contracted'] > 0 else 0.0, axis=1
+                )
+                df_bushels['Avg_Price_Open'] = df_bushels.apply(
+                    lambda row: row['Open_Revenue'] / row['Open'] if row['Open'] > 0 else 0.0, axis=1
+                )
+                
+                # Calculate percentages for each segment (relative to total for that crop)
+                df_bushels['Pct_Sold'] = df_bushels.apply(
+                    lambda row: (row['Sold'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                df_bushels['Pct_Contracted'] = df_bushels.apply(
+                    lambda row: (row['Contracted'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                df_bushels['Pct_Open'] = df_bushels.apply(
+                    lambda row: (row['Open'] / row['Total'] * 100) if row['Total'] > 0 else 0.0, axis=1
+                )
+                
+                # Format percentage text (only show if >= 1% to avoid cluttering)
+                # Round to whole numbers and format as "xx%"
+                df_bushels['Text_Sold'] = df_bushels.apply(
+                    lambda row: f"{int(round(row['Pct_Sold']))}%" if row['Pct_Sold'] >= 1.0 else "", axis=1
+                )
+                df_bushels['Text_Contracted'] = df_bushels.apply(
+                    lambda row: f"{int(round(row['Pct_Contracted']))}%" if row['Pct_Contracted'] >= 1.0 else "", axis=1
+                )
+                df_bushels['Text_Open'] = df_bushels.apply(
+                    lambda row: f"{int(round(row['Pct_Open']))}%" if row['Pct_Open'] >= 1.0 else "", axis=1
+                )
                 
                 # Create stacked horizontal bar chart - add in correct order: Sold, Contracted, Open
                 fig_bushels = go.Figure()
@@ -892,7 +1009,12 @@ def main():
                     x=df_bushels['Sold'],
                     orientation='h',
                     marker_color='#2ecc71',
-                    hovertemplate='Sold: %{x:,.0f} bu<extra></extra>',
+                    customdata=df_bushels[['Sold_Revenue', 'Avg_Price_Sold']].values,
+                    text=df_bushels['Text_Sold'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='black', size=18, family='Arial Black'),
+                    hovertemplate='Sold: %{x:,.0f} bu<br>Revenue: $%{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
                     legendrank=1,
                     showlegend=True
                 ))
@@ -903,7 +1025,12 @@ def main():
                     x=df_bushels['Contracted'],
                     orientation='h',
                     marker_color='#3498db',
-                    hovertemplate='Contracted: %{x:,.0f} bu<extra></extra>',
+                    customdata=df_bushels[['Contracted_Revenue', 'Avg_Price_Contracted']].values,
+                    text=df_bushels['Text_Contracted'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='white', size=18, family='Arial Black'),
+                    hovertemplate='Contracted: %{x:,.0f} bu<br>Revenue: $%{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
                     legendrank=2,
                     showlegend=True
                 ))
@@ -914,8 +1041,12 @@ def main():
                     x=df_bushels['Open'],
                     orientation='h',
                     marker_color='#e74c3c',
-                    customdata=df_bushels['Total'],
-                    hovertemplate='Open: %{x:,.0f} bu<br><b>Total: %{customdata:,.0f} bu</b><extra></extra>',
+                    customdata=df_bushels[['Total', 'Open_Revenue', 'Avg_Price_Open']].values,
+                    text=df_bushels['Text_Open'],
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    insidetextfont=dict(color='white', size=18, family='Arial Black'),
+                    hovertemplate='Open: %{x:,.0f} bu<br>Revenue: $%{customdata[1]:,.0f}<br>Avg Price: $%{customdata[2]:.2f}/bu<br>━━━━━━━━━━━━━━━━<br><b>Total: %{customdata[0]:,.0f} bu</b><extra></extra>',
                     legendrank=3,
                     showlegend=True
                 ))
@@ -1276,27 +1407,87 @@ def main():
             key="bins_crop_year"
         )
         
-        # Get bins grouped by crop
-        bins_by_crop = get_bins_with_storage_by_crop(db, selected_crop_year)
+        # View mode selector (radio button) and include empty bins checkbox
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            view_mode = st.radio(
+                "View Mode",
+                options=["View by Crop", "View by Location"],
+                index=0,  # Default to "View by Crop"
+                key="bins_view_mode",
+                horizontal=True
+            )
+        with col2:
+            include_empty_bins = st.checkbox(
+                "Include empty bins",
+                value=False,
+                key="bins_include_empty",
+                help="If checked, shows all bins regardless of storage. If unchecked, only shows bins with storage for the selected crop year."
+            )
         
-        # Debug: Show what crops were found
+        # Get bins grouped by crop or location based on view mode
+        try:
+            if view_mode == "View by Crop":
+                bins_by_group = get_bins_with_storage_by_crop(db, selected_crop_year, include_empty=include_empty_bins)
+                group_label = "Crop"
+            else:
+                bins_by_group = get_bins_with_storage_by_location(db, selected_crop_year, include_empty=include_empty_bins)
+                group_label = "Location"
+        except Exception as e:
+            st.error(f"Error loading bin data: {e}")
+            import traceback
+            with st.expander("Error details"):
+                st.code(traceback.format_exc())
+            bins_by_group = {}
+            group_label = "Crop"
+        
+        # Debug: Show what groups were found
         if st.checkbox("🔍 Debug: Show bin data", key="debug_bins"):
-            st.write(f"**Crops found:** {list(bins_by_crop.keys())}")
-            for crop, bins_list in bins_by_crop.items():
-                st.write(f"**{crop}:** {len(bins_list)} bins")
-                for bin_name, crop_storage in bins_list:
-                    st.write(f"  - {bin_name.location} - {bin_name.bin_name}: capacity={bin_name.capacity}, current={crop_storage.current_content}")
-        
-        if not bins_by_crop:
-            st.info("No bins with storage found for the selected crop year.")
-        else:
-            # Create a chart for each crop
-            crops = sorted(bins_by_crop.keys())
+            st.write(f"**View Mode:** {view_mode}")
+            st.write(f"**{group_label}s found:** {sorted(list(bins_by_group.keys()))}")
+            st.write(f"**Total {group_label}s:** {len(bins_by_group)}")
             
-            for crop in crops:
-                st.markdown(f"### {crop}")
+            # Also show all bin_names and crop_storage for comparison
+            if view_mode == "View by Location":
+                from reports.bin_queries import get_all_bin_names, get_crop_storage_for_year
+                all_bin_names = get_all_bin_names(db)
+                all_storage = get_crop_storage_for_year(db, selected_crop_year)
+                st.write(f"**All bin_names:** {len(all_bin_names)} bins")
+                st.write(f"**All crop_storage records for year {selected_crop_year}:** {len(all_storage)} records")
                 
-                crop_bins = bins_by_crop[crop]
+                # Show unique locations from bin_names
+                unique_locations_from_bins = set()
+                for bn in all_bin_names:
+                    if bn.location:
+                        unique_locations_from_bins.add(bn.location)
+                st.write(f"**Unique locations in bin_names:** {sorted(list(unique_locations_from_bins))}")
+                
+                # Show unique locations from crop_storage
+                unique_locations_from_storage = set()
+                for cs in all_storage:
+                    if cs.location:
+                        unique_locations_from_storage.add(cs.location)
+                st.write(f"**Unique locations in crop_storage:** {sorted(list(unique_locations_from_storage))}")
+            
+            for group, bins_list in bins_by_group.items():
+                st.write(f"**{group}:** {len(bins_list)} bins")
+                for bin_name, crop_storage in bins_list:
+                    current_content = crop_storage.current_content if crop_storage and hasattr(crop_storage, 'current_content') else 0
+                    st.write(f"  - {bin_name.location} - {bin_name.bin_name}: capacity={bin_name.capacity}, current={current_content}")
+        
+        if not bins_by_group:
+            if include_empty_bins:
+                st.info("No bins found in the database.")
+            else:
+                st.info("No bins with storage found for the selected crop year. Try enabling 'Include empty bins' to see all bins.")
+        else:
+            # Create a chart for each group (crop or location)
+            groups = sorted(bins_by_group.keys())
+            
+            for group in groups:
+                st.markdown(f"### {group}")
+                
+                group_bins = bins_by_group[group]
                 
                 # Prepare data for stacked bar chart
                 bin_labels = []
@@ -1304,13 +1495,22 @@ def main():
                 available_capacity = []  # y - available bushels to store
                 total_capacity = []  # z - total capacity
                 
-                for bin_name, crop_storage in sorted(crop_bins, key=lambda b: (b[0].location, b[0].bin_name)):
-                    # Create bin label
-                    bin_label = f"{bin_name.location} - {bin_name.bin_name}"
+                for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
+                    # Create bin label - include crop name if viewing by location
+                    if view_mode == "View by Location":
+                        if crop_storage and hasattr(crop_storage, 'crop') and crop_storage.crop:
+                            bin_label = f"{bin_name.bin_name} ({crop_storage.crop})"
+                        else:
+                            bin_label = f"{bin_name.bin_name} (Empty)"
+                    else:
+                        bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
                     
-                    # x: Current storage bushels from crop_storage
-                    current = crop_storage.current_content or 0
+                    # x: Current storage bushels from crop_storage (0 if no storage record)
+                    if crop_storage and hasattr(crop_storage, 'current_content'):
+                        current = crop_storage.current_content or 0
+                    else:
+                        current = 0
                     current_storage.append(float(current))
                     
                     # z: Total capacity from bin_name
@@ -1349,16 +1549,44 @@ def main():
                 else:
                     uniform_bar_width = 0.5  # Wider for more bins
                 
-                # Determine colors based on crop
-                if crop.lower() == 'corn':
+                # Determine colors based on crop (need to get crop from first bin in group)
+                # When viewing by location, bins can have different crops, so use crop from first bin
+                first_storage = group_bins[0][1] if group_bins and group_bins[0][1] else None
+                first_crop = first_storage.crop if first_storage and hasattr(first_storage, 'crop') else None
+                crop_for_color = group.lower() if view_mode == "View by Crop" else (first_crop.lower() if first_crop else '')
+                
+                if crop_for_color == 'corn':
                     current_color = '#FFD700'  # Yellow
                     current_line_color = '#FFA500'  # Darker yellow/orange for border
-                elif crop.lower() == 'soybeans':
+                elif crop_for_color == 'soybeans':
                     current_color = '#8B4513'  # Brown
                     current_line_color = '#654321'  # Darker brown for border
                 else:
                     current_color = '#3498db'  # Default blue
                     current_line_color = '#2980b9'
+                
+                # When viewing by location, bins may have different crops, so color each bin based on its crop
+                # We'll need to handle this differently - use a list of colors for each bin
+                if view_mode == "View by Location":
+                    bin_colors = []
+                    bin_line_colors = []
+                    for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
+                        if crop_storage and hasattr(crop_storage, 'crop'):
+                            crop_name = (crop_storage.crop or '').lower()
+                        else:
+                            crop_name = ''  # Empty bin
+                        if crop_name == 'corn':
+                            bin_colors.append('#FFD700')  # Yellow
+                            bin_line_colors.append('#FFA500')
+                        elif crop_name == 'soybeans':
+                            bin_colors.append('#8B4513')  # Brown
+                            bin_line_colors.append('#654321')
+                        else:
+                            bin_colors.append('#3498db')  # Default blue (or gray for empty)
+                            bin_line_colors.append('#2980b9')
+                else:
+                    bin_colors = [current_color] * len(bin_labels)
+                    bin_line_colors = [current_line_color] * len(bin_labels)
                 
                 # Calculate percentage full for text labels (current/capacity)
                 percentages_full = []
@@ -1368,8 +1596,10 @@ def main():
                     if capacity_val > 0:
                         pct = (current_val / capacity_val) * 100
                         percentages_full.append(f"{pct:.0f}% full")
-                    else:
+                    elif capacity_val == 0:
                         percentages_full.append("Unlimited")  # Infinite capacity
+                    else:
+                        percentages_full.append("Empty")  # No capacity info
                 
                 # Create subplots if multiple rows needed, otherwise single figure
                 if num_rows > 1:
@@ -1396,14 +1626,16 @@ def main():
                             
                             # Current storage (crop-specific color)
                             row_percentages = percentages_full[start_idx:end_idx]
+                            row_colors = bin_colors[start_idx:end_idx] if isinstance(bin_colors, list) else current_color
+                            row_line_colors = bin_line_colors[start_idx:end_idx] if isinstance(bin_line_colors, list) else current_line_color
                             fig_bins.add_trace(go.Bar(
                                 x=row_bin_labels,
                                 y=row_current,
                                 name='Current Storage' if row_idx == 0 else '',
                                 orientation='v',
                                 marker=dict(
-                                    color=current_color,
-                                    line=dict(color=current_line_color, width=1),
+                                    color=row_colors,
+                                    line=dict(color=row_line_colors, width=1),
                                     cornerradius=0.2
                                 ),
                                 hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
@@ -1433,7 +1665,7 @@ def main():
                     
                     # Update layout
                     fig_bins.update_layout(
-                        title=f'{crop} - Bin Storage Capacity',
+                        title=f'{group} - Bin Storage Capacity',
                         barmode='stack',
                         hovermode='x unified',
                         height=350 * num_rows,  # Adjust height based on number of rows
@@ -1468,14 +1700,16 @@ def main():
                     fig_bins = go.Figure()
                     
                     # Bottom stack: Current storage (crop-specific color)
+                    bar_colors = bin_colors if isinstance(bin_colors, list) else current_color
+                    bar_line_colors = bin_line_colors if isinstance(bin_line_colors, list) else current_line_color
                     fig_bins.add_trace(go.Bar(
                         x=bin_labels,
                         y=current_storage,
                         name='Current Storage',
                         orientation='v',
                         marker=dict(
-                            color=current_color,
-                            line=dict(color=current_line_color, width=1),
+                            color=bar_colors,
+                            line=dict(color=bar_line_colors, width=1),
                             cornerradius=0.2
                         ),
                         hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
@@ -1506,7 +1740,7 @@ def main():
                     gap_size = 0.6 if num_bins == 1 else (0.5 if num_bins == 2 else (0.4 if num_bins <= 4 else 0.2))
                     
                     fig_bins.update_layout(
-                        title=f'{crop} - Bin Storage Capacity',
+                        title=f'{group} - Bin Storage Capacity',
                         xaxis=dict(
                             title='',  # Remove "Bin Name" label
                             tickangle=-45 if len(bin_labels) > 4 else 0,
@@ -1531,23 +1765,30 @@ def main():
                 
                 st.plotly_chart(fig_bins, width='stretch')
                 
-                # Summary table for this crop
-                with st.expander(f"📊 View {crop} Bin Details"):
+                # Summary table for this group
+                with st.expander(f"📊 View {group} Bin Details"):
                     summary_data = []
-                    for bin_name, crop_storage in sorted(crop_bins, key=lambda b: (b[0].location, b[0].bin_name)):
-                        current = crop_storage.current_content or 0
+                    for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
+                        if crop_storage and hasattr(crop_storage, 'current_content'):
+                            current = crop_storage.current_content or 0
+                        else:
+                            current = 0
                         capacity = bin_name.capacity or 0
                         available = float(current) if capacity == 0 else max(0.0, float(capacity) - float(current))
                         
-                        summary_data.append({
+                        row_data = {
                             'Location': bin_name.location or 'N/A',
                             'Bin Name': bin_name.bin_name or 'N/A',
                             'Current Storage (bu)': f"{current:,.0f}",
                             'Available Capacity (bu)': f"{available:,.0f}",
                             'Total Capacity (bu)': f"{capacity:,.0f}",
-                            'Preferred Crop': bin_name.preferred_crop or 'N/A',
-                            'Load Status': crop_storage.load_status or 'N/A'
-                        })
+                            'Preferred Crop': bin_name.preferred_crop if hasattr(bin_name, 'preferred_crop') else 'N/A',
+                            'Load Status': crop_storage.load_status if crop_storage and hasattr(crop_storage, 'load_status') else 'N/A'
+                        }
+                        # Add actual crop when viewing by location (since bins can have different crops)
+                        if view_mode == "View by Location":
+                            row_data['Crop'] = crop_storage.crop if crop_storage and hasattr(crop_storage, 'crop') else 'Empty'
+                        summary_data.append(row_data)
                     
                     if summary_data:
                         df_bins = pd.DataFrame(summary_data)
@@ -1623,7 +1864,10 @@ def main():
                     bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
                     
-                    current = float(crop_storage.current_content or 0)
+                    if crop_storage and hasattr(crop_storage, 'current_content'):
+                        current = float(crop_storage.current_content or 0)
+                    else:
+                        current = 0.0
                     capacity = float(bin_name.capacity or 0)
                     available = 0.0 if capacity == 0 else max(0.0, capacity - current)
                     
@@ -1992,11 +2236,11 @@ def main():
                     st.plotly_chart(fig, width='stretch')
                     st.markdown("---")
                 
-                # Display contracts table
+                # Display contracts table - split by crop type
                 st.markdown("### Contract Details")
                 
-                # Prepare table data
-                table_data = []
+                # Group contracts by crop type
+                contracts_by_crop = {}
                 for contract in filtered_contracts:
                     contract_crop_year = None
                     if contract.delivery_start:
@@ -2008,10 +2252,12 @@ def main():
                     normalized_crop = normalize_commodity_name(db, contract.commodity) if contract.commodity else 'Unknown'
                     normalized_vendor = normalize_vendor_name(db, contract.buyer_name) if contract.buyer_name else 'Unknown'
                     
-                    table_data.append({
+                    if normalized_crop not in contracts_by_crop:
+                        contracts_by_crop[normalized_crop] = []
+                    
+                    contracts_by_crop[normalized_crop].append({
                         'Contract Number': contract.contract_number,
                         'Crop Year': contract_crop_year if contract_crop_year else '',
-                        'Crop Type': normalized_crop,
                         'Vendor': normalized_vendor,
                         'Bushels': contract.bushels or 0,
                         'Price ($/bu)': f"${contract.price:.2f}" if contract.price else '',
@@ -2022,8 +2268,12 @@ def main():
                         'Delivery End': contract.delivery_end.strftime('%Y-%m-%d') if contract.delivery_end else ''
                     })
                 
-                df_contracts = pd.DataFrame(table_data)
-                st.dataframe(df_contracts, width='stretch', hide_index=True)
+                # Display separate table for each crop type
+                for crop in sorted(contracts_by_crop.keys()):
+                    st.markdown(f"#### {crop}")
+                    df_contracts = pd.DataFrame(contracts_by_crop[crop])
+                    st.dataframe(df_contracts, width='stretch', hide_index=True)
+                    st.markdown("---")
     
     with tab6:
         st.subheader("Export Data")
