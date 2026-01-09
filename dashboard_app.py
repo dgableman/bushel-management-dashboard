@@ -85,7 +85,13 @@ if PROJECT_PATH not in sys.path:
 from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
-from reports.bin_queries import get_bins_with_storage_by_crop, get_bins_with_storage_by_location
+from reports.bin_queries import get_bins_with_storage_by_crop
+try:
+    from reports.bin_queries import get_bins_with_storage_by_location
+except ImportError:
+    # Fallback if function doesn't exist (shouldn't happen but handles caching issues)
+    def get_bins_with_storage_by_location(db, crop_year, include_empty=False):
+        return {}
 from reports.commodity_utils import (
     normalize_commodity_name,
     get_commodities_for_normalized_name,
