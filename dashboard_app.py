@@ -376,6 +376,111 @@ def get_market_prices():
     return default_prices
 
 
+def render_deliveries_tab(db, contracts):
+    """Render the Deliveries tab.
+
+    Lets the user pick a calendar Year and Month (NOT crop year), then shows the
+    Active contracts whose delivery window overlaps that month, grouped by
+    commodity (normalized) and location (buyer name):
+      - a Summary table: commodity, location, total bushels (accumulated)
+      - per commodity+location: each contract's number, price, and bushels
+    """
+    import calendar
+
+    st.subheader("🚚 Deliveries")
+
+    today = datetime.now()
+    col_year, col_month, _spacer = st.columns([1, 1, 2])
+    with col_year:
+        year_options = list(range(today.year - 5, today.year + 3))
+        selected_year = st.selectbox(
+            "Year",
+            options=year_options,
+            index=year_options.index(today.year),
+            key="deliveries_tab_year",
+        )
+    with col_month:
+        selected_month = st.selectbox(
+            "Month",
+            options=list(range(1, 13)),
+            index=today.month - 1,
+            format_func=lambda m: calendar.month_name[m],
+            key="deliveries_tab_month",
+        )
+
+    # Calendar-month window (inclusive of both edges)
+    start_of_month = date(selected_year, selected_month, 1)
+    last_day = calendar.monthrange(selected_year, selected_month)[1]
+    end_of_month = date(selected_year, selected_month, last_day)
+
+    st.caption(
+        f"Active contracts delivering in {calendar.month_name[selected_month]} {selected_year} "
+        f"({start_of_month:%m/%d/%Y} \u2013 {end_of_month:%m/%d/%Y})"
+    )
+
+    # Filter to Active contracts whose delivery window overlaps the selected month,
+    # then group by (commodity, location).
+    groups = {}  # (commodity, location) -> {"bushels": int, "rows": [..]}
+    for c in contracts:
+        if (c.status or "").strip().lower() != "active":
+            continue
+
+        eff_start = c.delivery_start or c.delivery_end
+        eff_end = c.delivery_end or c.delivery_start
+        if not eff_start or not eff_end:
+            continue
+        if eff_start > eff_end:  # guard against reversed dates
+            eff_start, eff_end = eff_end, eff_start
+
+        # Overlap test: window touches the month if it starts on/before month end
+        # and ends on/after month start.
+        if not (eff_start <= end_of_month and eff_end >= start_of_month):
+            continue
+
+        commodity = normalize_commodity_name(db, c.commodity)
+        location = (c.buyer_name or "").strip() or "(no buyer)"
+        bushels = c.bushels or 0
+
+        group = groups.setdefault((commodity, location), {"bushels": 0, "rows": []})
+        group["bushels"] += bushels
+        group["rows"].append({
+            "Contract #": c.contract_number or "",
+            "Price": f"${c.price:.2f}" if c.price is not None else "\u2014",
+            "Bushels": f"{bushels:,}",
+        })
+
+    if not groups:
+        st.info(
+            f"No active contracts deliver in {calendar.month_name[selected_month]} {selected_year}."
+        )
+        return
+
+    ordered_keys = sorted(groups.keys())
+
+    # ----- Summary -----
+    st.markdown("#### Summary")
+    summary_df = pd.DataFrame([
+        {
+            "Commodity": commodity,
+            "Location": location,
+            "Total Bushels": f"{groups[(commodity, location)]['bushels']:,}",
+        }
+        for (commodity, location) in ordered_keys
+    ])
+    st.dataframe(summary_df, hide_index=True, width='stretch')
+
+    # A little whitespace before the details.
+    st.write("")
+
+    # ----- Details -----
+    st.markdown("#### Details")
+    for (commodity, location) in ordered_keys:
+        group = groups[(commodity, location)]
+        st.markdown(f"**{commodity} @ {location}** \u2014 {group['bushels']:,} bu")
+        detail_df = pd.DataFrame(group["rows"]).sort_values("Contract #").reset_index(drop=True)
+        st.dataframe(detail_df, hide_index=True, width='stretch')
+
+
 def main():
     """Main dashboard application."""
     
@@ -469,7 +574,10 @@ def main():
     all_settlements = get_all_settlements(db)
     
     # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌾 Crop Year Sales", "📅 Deliveries by Month", "📦 Bins", "📦 Bins 2 (Not Working)", "📋 Contracts", "📥 Export"])
+    tab_deliveries, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚚 Deliveries", "🌾 Crop Year Sales", "📅 Deliveries by Month", "📦 Bins", "📦 Bins 2 (Not Working)", "📋 Contracts", "📥 Export"])
+    
+    with tab_deliveries:
+        render_deliveries_tab(db, all_contracts)
     
     with tab1:
         st.subheader("Crop Year Sales")
