@@ -51,10 +51,19 @@ def normalize_commodity_name(db: Session, commodity: Optional[str]) -> str:
     commodity = commodity.strip()
     mappings = _load_commodity_mappings(db)
     
-    # Look up the mapping
-    normalized = mappings.get(commodity, commodity)
+    # Exact match first
+    if commodity in mappings:
+        return mappings[commodity]
     
-    return normalized
+    # Case-insensitive fallback: aliases may be stored with different casing than
+    # the value on the contract (e.g. alias "#2 Yellow CORN" vs "#2 YELLOW CORN").
+    commodity_lower = commodity.lower()
+    for alias, standard in mappings.items():
+        if alias and alias.strip().lower() == commodity_lower:
+            return standard
+    
+    # No mapping found - return the original value
+    return commodity
 
 
 def get_commodities_for_normalized_name(db: Session, normalized_name: str) -> list:
