@@ -24,11 +24,13 @@ ENV/
 *.sqlite
 *.sqlite3
 
-# Exceptions: allow specific database files for Streamlit Cloud
+# Exceptions: allow the database file for Streamlit Cloud
 # Note: Exception patterns must come after ignore patterns
 !data/
-!data/*_bushel_management.db
 !data/bushel_management.db
+
+# Logs
+*.log
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

@@ -6,7 +6,7 @@ Interactive web dashboard for managing bushel contracts, settlements, and crop y
 
 **Streamlit Cloud:** ✅ Deployed and Running  
 **Repository:** https://github.com/dgableman/bushel-management-dashboard  
-**Username-based Databases:** Each user enters their username to access their database (`{username}_bushel_management.db`)  
+**Database:** Single shared database (`data/bushel_management.db`)  
 **Setup Guide:** See [STREAMLIT_CLOUD_SETUP.md](STREAMLIT_CLOUD_SETUP.md) for complete setup documentation and update workflows.
 
 ## 🚀 Quick Start
@@ -65,15 +65,10 @@ Bushel_Management_Reports/
 
 ## ⚙️ Configuration
 
-**Username Requirement:**
-- Users must enter their username on first load
-- Database file: `{username}_bushel_management.db`
-- Stored in `data/` folder or configured via Streamlit Secrets
-
 **Database Path:**
-- Format: `data/{username}_bushel_management.db` (relative to project root)
-- Can be set via Streamlit Secrets: `DB_PATH=/path/to/database.db` (overrides username-based path)
-- For Streamlit Cloud: Can be configured via Streamlit Secrets (see setup guide)
+- Local: `data/bushel_management.db` (defaults to the main Bushel_Management project's database if present)
+- Can be set via the `DB_PATH` environment variable (overrides the default)
+- For Streamlit Cloud: Can be configured via Streamlit Secrets: `DB_PATH=/path/to/database.db`
 
 **Crop Year:**
 - Defaults to current crop year (Oct 1 - Sep 30)

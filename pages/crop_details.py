@@ -45,13 +45,8 @@ def main():
     st.caption(f"Period: {start_date.strftime('%B %d, %Y')} to {end_date.strftime('%B %d, %Y')}")
     st.markdown("---")
     
-    # Get database connection using username
-    username = st.session_state.get('username')
-    if not username:
-        st.error("Username not set. Please go back to the main dashboard and enter your username.")
-        st.stop()
-    
-    db = get_database_session(username)
+    # Get database connection
+    db = get_database_session()
     if db is None:
         st.error("Could not connect to database. Please check the database path.")
         return

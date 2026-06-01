@@ -314,91 +314,24 @@ def get_drilldown_details(
 
 
 @st.cache_resource
-def get_database_session(_username):
-    """
-    Create and cache database session using username-based database path.
-    
-    Args:
-        _username: Username (prefixed with _ to indicate it's used for caching)
-    """
+def get_database_session():
+    """Create and cache a database session using the configured DB_PATH."""
     try:
-        if not _username:
-            return None  # Username not set yet
-        
-        # Construct database path based on username
-        # On Streamlit Cloud, use the script directory to find data folder
-        if is_streamlit_cloud():
-            # Streamlit Cloud: use script directory to find data folder
-            script_dir = Path(__file__).parent.absolute()
-            db_path = str(script_dir / 'data' / f"{_username}_bushel_management.db")
-        else:
-            # Local/Colab: Use the same directory as the default DB_PATH but with username prefix
-            default_db_path = Path(DB_PATH)
-            db_dir = default_db_path.parent
-            db_filename = f"{_username}_bushel_management.db"
-            db_path = str(db_dir / db_filename)
-        
-        # Check Streamlit secrets first (for Streamlit Cloud deployment)
-        # This can override the username-based path if needed
+        db_path = DB_PATH
+
+        # Allow a Streamlit secret or env override (used for cloud deployments)
         try:
             if hasattr(st, 'secrets') and st.secrets.get("DB_PATH"):
                 db_path = st.secrets.get("DB_PATH")
         except (AttributeError, FileNotFoundError, KeyError):
-            pass  # Secrets not available or not configured, use username-based path
-        
-        # Double-check file exists before trying to connect
-        db_path_obj = Path(db_path)
-        if not db_path_obj.exists():
-            # On Streamlit Cloud, try alternative paths
-            if is_streamlit_cloud():
-                # Try absolute mount path
-                alt_paths = [
-                    f"/mount/src/bushel-management-dashboard/data/{_username}_bushel_management.db",
-                    str(Path(__file__).parent.absolute() / 'data' / f"{_username}_bushel_management.db"),
-                ]
-                for alt_path in alt_paths:
-                    alt_path_obj = Path(alt_path)
-                    if alt_path_obj.exists():
-                        db_path = alt_path
-                        db_path_obj = alt_path_obj
-                        break
-                else:
-                    # Still not found, show helpful error
-                    raise FileNotFoundError(
-                        f"Database file not found: {db_path}\n"
-                        f"Tried paths:\n"
-                        f"  - {db_path}\n"
-                        f"  - {alt_paths[0]}\n"
-                        f"  - {alt_paths[1]}\n"
-                        f"Username: {_username}\n"
-                        f"Script dir: {Path(__file__).parent.absolute()}"
-                    )
-            else:
-                raise FileNotFoundError(f"Database file not found: {db_path}")
-        
-        # Try to create the session
-        session = create_db_session(db_path)
-        return session
+            pass
+
+        if not Path(db_path).exists():
+            raise FileNotFoundError(f"Database file not found: {db_path}")
+
+        return create_db_session(db_path)
     except FileNotFoundError as e:
         st.error(f"❌ {e}")
-        # Try to show helpful debug info
-        try:
-            username = st.session_state.get('username', 'Unknown')
-            script_dir = Path(__file__).parent.absolute()
-            st.info(f"**Username:** `{username}`")
-            st.info(f"**Script directory:** `{script_dir}`")
-            st.info(f"**Expected database path:** `{script_dir / 'data' / f'{username}_bushel_management.db'}`")
-            st.info(f"**Streamlit Cloud mount path:** `/mount/src/bushel-management-dashboard/data/{username}_bushel_management.db`")
-            # List files in data directory if it exists
-            data_dir = script_dir / 'data'
-            if data_dir.exists():
-                st.info(f"**Files in data directory:**")
-                for f in sorted(data_dir.glob('*.db')):
-                    st.write(f"  - {f.name} ({f.stat().st_size / 1024:.1f} KB)")
-            else:
-                st.warning(f"**Data directory does not exist:** `{data_dir}`")
-        except Exception as debug_error:
-            st.warning(f"Could not gather debug info: {debug_error}")
         return None
     except Exception as e:
         st.error(f"❌ Database connection error: {type(e).__name__}: {e}")
@@ -446,52 +379,14 @@ def get_market_prices():
 def main():
     """Main dashboard application."""
     
-    # Require username input
-    if 'username' not in st.session_state or not st.session_state.username:
-        st.title("🌾 Bushel Management Dashboard")
-        st.markdown("---")
-        st.markdown("### Please enter your username to continue")
-        
-        username = st.text_input(
-            "Username:",
-            key="username_input",
-            placeholder="Enter your username",
-            help="This will be used to load your database file: {username}_bushel_management.db"
-        )
-        
-        if username and username.strip():
-            # Store username in session state
-            new_username = username.strip()
-            # If username changed, clear the cache
-            if st.session_state.get('username') != new_username:
-                get_database_session.clear()
-            st.session_state.username = new_username
-            st.rerun()  # Rerun to load the dashboard with the username
-        else:
-            st.info("👆 Please enter a username above to access the dashboard.")
-            st.stop()
-    
     # Title
     st.title("🌾 Bushel Management Dashboard")
     st.markdown("---")
     
     # Show database path (for debugging)
-    username = st.session_state.get('username', 'Not set')
-    default_db_path = Path(DB_PATH)
-    db_dir = default_db_path.parent
-    user_db_path = db_dir / f"{username}_bushel_management.db"
+    user_db_path = Path(DB_PATH)
     
     with st.sidebar.expander("ℹ️ Settings", expanded=True):  # Expanded by default for debugging
-        st.write(f"**Username:** `{username}`")
-        
-        # Allow user to change username
-        if st.button("🔄 Change Username", key="change_username_btn"):
-            # Clear username and cache
-            st.session_state.username = None
-            # Clear the database session cache
-            get_database_session.clear()
-            st.rerun()
-        
         st.write(f"**Environment:** {'Streamlit Cloud' if is_streamlit_cloud() else 'Local' if not is_colab() else 'Colab'}")
         st.write(f"**Database Path:** `{user_db_path}`")
         st.write(f"**Project Path:** `{PROJECT_PATH}`")
@@ -565,9 +460,7 @@ def main():
             st.rerun()
     
     # Get database session
-    # Get database session using username
-    username = st.session_state.get('username')
-    db = get_database_session(username) if username else None
+    db = get_database_session()
     if db is None:
         st.stop()
     
