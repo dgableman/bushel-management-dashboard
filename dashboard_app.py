@@ -438,7 +438,7 @@ def render_deliveries_tab(db, contracts):
             continue
 
         commodity = normalize_commodity_name(db, c.commodity)
-        location = (c.buyer_name or "").strip() or "(no buyer)"
+        location = normalize_vendor_name(db, c.buyer_name)  # roll up vendor spellings
         bushels = c.bushels or 0
 
         group = groups.setdefault((commodity, location), {"bushels": 0, "rows": []})
