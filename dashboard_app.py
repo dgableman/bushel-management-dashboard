@@ -98,6 +98,10 @@ from reports.monthly_deliveries import (
     calculate_monthly_deliveries,
     get_month_name_for_crop_year
 )
+from reports.contract_pdf_storage import (
+    fetch_pdf_bytes,
+    storage_available,
+)
 
 # Set page config for full-width layout
 st.set_page_config(
@@ -376,6 +380,44 @@ def get_market_prices():
     return default_prices
 
 
+def render_contract_pdf_picker(contract_numbers, key_prefix, label="\U0001F4C4 View contract PDF"):
+    """Render a contract picker + Download PDF button.
+
+    PDFs live in a private Google Cloud Storage bucket and are fetched lazily
+    (and cached) only for the contract the user selects.
+    """
+    numbers = sorted({(n or "").strip() for n in contract_numbers if (n or "").strip()})
+    if not numbers:
+        return
+
+    st.markdown(f"##### {label}")
+
+    if not storage_available():
+        st.info(
+            "Contract PDFs aren't configured yet. Add the `gcp_service_account` "
+            "secret in the app settings to enable PDF downloads."
+        )
+        return
+
+    selected = st.selectbox(
+        "Contract number",
+        options=["\u2014 Select \u2014"] + numbers,
+        key=f"{key_prefix}_pdf_select",
+    )
+    if selected and selected != "\u2014 Select \u2014":
+        pdf_bytes = fetch_pdf_bytes(selected)
+        if pdf_bytes:
+            st.download_button(
+                label=f"\u2B07\uFE0F Download {selected}.pdf",
+                data=pdf_bytes,
+                file_name=f"{selected}.pdf",
+                mime="application/pdf",
+                key=f"{key_prefix}_pdf_download",
+            )
+        else:
+            st.warning(f"No PDF found in storage for contract {selected}.")
+
+
 def render_deliveries_tab(db, contracts):
     """Render the Deliveries tab.
 
@@ -474,11 +516,16 @@ def render_deliveries_tab(db, contracts):
 
     # ----- Details -----
     st.markdown("#### Details")
+    delivering_contract_numbers = []
     for (commodity, location) in ordered_keys:
         group = groups[(commodity, location)]
         st.markdown(f"**{commodity} @ {location}** \u2014 {group['bushels']:,} bu")
         detail_df = pd.DataFrame(group["rows"]).sort_values("Contract #").reset_index(drop=True)
         st.dataframe(detail_df, hide_index=True, width='stretch')
+        delivering_contract_numbers.extend(r["Contract #"] for r in group["rows"])
+
+    st.write("")
+    render_contract_pdf_picker(delivering_contract_numbers, key_prefix="deliveries_tab")
 
 
 def main():
@@ -2277,6 +2324,11 @@ def main():
                     df_contracts = pd.DataFrame(contracts_by_crop[crop])
                     st.dataframe(df_contracts, width='stretch', hide_index=True)
                     st.markdown("---")
+
+                render_contract_pdf_picker(
+                    [c.contract_number for c in filtered_contracts],
+                    key_prefix="contracts_tab",
+                )
     
     with tab6:
         st.subheader("Export Data")

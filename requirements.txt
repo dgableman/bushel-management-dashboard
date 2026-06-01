@@ -24,3 +24,6 @@ yfinance>=0.2.0
 # Note: google-colab package is included in Colab environment
 # If running locally, you may need: google-api-python-client
 
+# Google Cloud Storage (contract PDF hosting)
+google-cloud-storage>=2.19.0
+
