@@ -101,6 +101,8 @@ from reports.monthly_deliveries import (
 from reports.contract_pdf_storage import (
     fetch_pdf_bytes,
     storage_available,
+    list_available_contract_numbers,
+    signed_url_for_contract,
 )
 
 # Set page config for full-width layout
@@ -516,16 +518,25 @@ def render_deliveries_tab(db, contracts):
 
     # ----- Details -----
     st.markdown("#### Details")
-    delivering_contract_numbers = []
+    # One cached bucket listing tells us which contracts have a PDF, so we only
+    # render an "Open PDF" link for those rows (others stay blank).
+    available = set(list_available_contract_numbers()) if storage_available() else set()
     for (commodity, location) in ordered_keys:
         group = groups[(commodity, location)]
         st.markdown(f"**{commodity} @ {location}** \u2014 {group['bushels']:,} bu")
         detail_df = pd.DataFrame(group["rows"]).sort_values("Contract #").reset_index(drop=True)
-        st.dataframe(detail_df, hide_index=True, width='stretch')
-        delivering_contract_numbers.extend(r["Contract #"] for r in group["rows"])
-
-    st.write("")
-    render_contract_pdf_picker(delivering_contract_numbers, key_prefix="deliveries_tab")
+        detail_df["PDF"] = [
+            signed_url_for_contract(cn) if cn in available else None
+            for cn in detail_df["Contract #"]
+        ]
+        st.dataframe(
+            detail_df,
+            hide_index=True,
+            width='stretch',
+            column_config={
+                "PDF": st.column_config.LinkColumn("PDF", display_text="Open PDF"),
+            },
+        )
 
 
 def main():

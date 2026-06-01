@@ -82,3 +82,50 @@ def fetch_pdf_bytes(contract_number: str) -> Optional[bytes]:
         return blob.download_as_bytes()
     except Exception:
         return None
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def list_available_contract_numbers():
+    """Return the contract numbers that currently have a PDF in the bucket.
+
+    One cached bucket listing, so callers can cheaply decide which rows get a
+    link without an existence check per row.
+    """
+    bucket = _get_bucket()
+    if bucket is None:
+        return []
+    try:
+        names = set()
+        for blob in bucket.list_blobs(prefix=_BLOB_PREFIX):
+            n = blob.name[len(_BLOB_PREFIX):]
+            if n.endswith(".pdf"):
+                n = n[:-4]
+            if n:
+                names.add(n)
+        return sorted(names)
+    except Exception:
+        return []
+
+
+def signed_url_for_contract(contract_number: str, expiration_seconds: int = 7 * 24 * 3600) -> Optional[str]:
+    """Generate a time-limited signed URL to view a contract's PDF inline.
+
+    Signing happens locally with the service-account key (no network call).
+    Callers should pass only contract numbers known to exist (see
+    list_available_contract_numbers) so links never point at missing files.
+    """
+    from datetime import timedelta
+
+    bucket = _get_bucket()
+    if bucket is None:
+        return None
+    blob = bucket.blob(blob_name_for_contract(contract_number))
+    try:
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=expiration_seconds),
+            method="GET",
+            response_type="application/pdf",  # open inline in the browser
+        )
+    except Exception:
+        return None
