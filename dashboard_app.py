@@ -1649,7 +1649,7 @@ def main():
                     bin_colors = [current_color] * len(bin_labels)
                     bin_line_colors = [current_line_color] * len(bin_labels)
                 
-                # Calculate percentage full for text labels (current/capacity)
+                # Percentage full + bushels/capacity labels (shown above each bar, not inside fill)
                 percentages_full = []
                 for i, bin_label in enumerate(bin_labels):
                     capacity_val = total_capacity[i]
@@ -1661,6 +1661,36 @@ def main():
                         percentages_full.append("Unlimited")  # Infinite capacity
                     else:
                         percentages_full.append("Empty")  # No capacity info
+
+                def _bar_label_annotation_text(i):
+                    cap = total_capacity[i]
+                    cur = current_storage[i]
+                    if cap > 0:
+                        line1 = f"{cur:,.0f} / {cap:,.0f} bu"
+                    else:
+                        line1 = f"{cur:,.0f} / Unlimited"
+                    return f"{line1}<br>{percentages_full[i]}"
+
+                def _add_bar_top_annotations(
+                    fig_bins, *, use_subplot_grid=False, row_num=1, col_num=1, label_slice=None
+                ):
+                    indices = label_slice if label_slice is not None else range(len(bin_labels))
+                    for i in indices:
+                        total_y = current_storage[i] + available_capacity[i]
+                        ann = dict(
+                            x=bin_labels[i],
+                            y=total_y,
+                            text=_bar_label_annotation_text(i),
+                            showarrow=False,
+                            yanchor="bottom",
+                            yshift=12,
+                            xanchor="center",
+                            font=dict(size=14, color="black", family="Arial Black"),
+                        )
+                        if use_subplot_grid:
+                            fig_bins.add_annotation(row=row_num, col=col_num, **ann)
+                        else:
+                            fig_bins.add_annotation(**ann)
                 
                 # Create subplots if multiple rows needed, otherwise single figure
                 if num_rows > 1:
@@ -1684,7 +1714,6 @@ def main():
                             row_available = available_capacity[start_idx:end_idx]
                             
                             # Current storage (crop-specific color)
-                            row_percentages = percentages_full[start_idx:end_idx]
                             row_colors = bin_colors[start_idx:end_idx] if isinstance(bin_colors, list) else current_color
                             row_line_colors = bin_line_colors[start_idx:end_idx] if isinstance(bin_line_colors, list) else current_line_color
                             fig_bins.add_trace(go.Bar(
@@ -1700,9 +1729,6 @@ def main():
                                 hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
                                 showlegend=(row_idx == 0),
                                 width=[uniform_bar_width] * len(row_bin_labels),  # Uniform width
-                                text=[f'{row_percentages[i] if i < len(row_percentages) else ""}' for i in range(len(row_bin_labels))],
-                                textposition='inside',
-                                textfont=dict(color='black', size=16, family='Arial Black')
                             ), row=row_idx+1, col=1)
                             
                             # Available capacity (green)
@@ -1721,6 +1747,13 @@ def main():
                                 width=[uniform_bar_width] * len(row_bin_labels),  # Uniform width
                                 text=[''] * len(row_bin_labels)  # No text on available capacity
                             ), row=row_idx+1, col=1)
+                            _add_bar_top_annotations(
+                                fig_bins,
+                                use_subplot_grid=True,
+                                row_num=row_idx + 1,
+                                col_num=1,
+                                label_slice=range(start_idx, end_idx),
+                            )
                     
                     # Update layout
                     fig_bins.update_layout(
@@ -1728,6 +1761,7 @@ def main():
                         barmode='stack',
                         hovermode='x unified',
                         height=350 * num_rows,  # Adjust height based on number of rows
+                        margin=dict(t=80),
                         legend=dict(
                             traceorder='normal',
                             yanchor="top",
@@ -1751,8 +1785,14 @@ def main():
                             row=row_idx+1, col=1
                         )
                     
-                    # Update y-axis (only need to update one since shared_yaxes=True)
-                    fig_bins.update_yaxes(title='Bushels', row=(num_rows + 1) // 2, col=1)
+                    # Y-axis: bushels cannot be negative (allow zoom, block pan below zero)
+                    fig_bins.update_yaxes(
+                        title='Bushels',
+                        showgrid=True,
+                        rangemode='nonnegative',
+                        minallowed=0,
+                        autorangeoptions_minallowed=0,
+                    )
                     
                 else:
                     # Single row - create regular figure
@@ -1773,9 +1813,6 @@ def main():
                         ),
                         hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
                         width=[uniform_bar_width] * len(bin_labels),  # Uniform width for all bars
-                        text=percentages_full,  # Add percentage text
-                        textposition='inside',
-                        textfont=dict(color='black', size=16, family='Arial Black')
                     ))
                     
                     # Top stack: Available capacity (green)
@@ -1807,7 +1844,10 @@ def main():
                         ),
                         yaxis=dict(
                             title='Bushels',
-                            showgrid=True
+                            showgrid=True,
+                            rangemode='nonnegative',
+                            minallowed=0,
+                            autorangeoptions=dict(minallowed=0),
                         ),
                         barmode='stack',
                         hovermode='x unified',
@@ -1819,8 +1859,10 @@ def main():
                             xanchor="left",
                             x=1.01
                         ),
-                        bargap=gap_size  # Larger gap for fewer bins to prevent fat bars
+                        bargap=gap_size,  # Larger gap for fewer bins to prevent fat bars
+                        margin=dict(t=80),
                     )
+                    _add_bar_top_annotations(fig_bins)
                 
                 st.plotly_chart(fig_bins, width='stretch')
                 
@@ -2101,7 +2143,11 @@ def main():
                         legend=legend_cfg,
                     )
                 
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(
+                    fig,
+                    width='stretch',
+                    config={'scrollZoom': False},
+                )
                 caption_style = (
                     "text-align:center;font-size:1.35rem;font-weight:700;"
                     "font-family:Arial Black,sans-serif;margin:0;padding:0;line-height:1.2;"
