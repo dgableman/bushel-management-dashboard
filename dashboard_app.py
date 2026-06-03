@@ -632,7 +632,7 @@ def main():
     all_settlements = get_all_settlements(db)
     
     # Tabs for different views
-    tab_deliveries, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚚 Deliveries", "🌾 Crop Year Sales", "📅 Deliveries by Month", "📦 Bins", "📦 Bins 2 (Not Working)", "📋 Contracts", "📥 Export"])
+    tab_deliveries, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚚 Deliveries", "🌾 Crop Year Sales", "📅 Deliveries by Month", "📦 Bins", "📦 Bins 3D", "📋 Contracts", "📥 Export"])
     
     with tab_deliveries:
         render_deliveries_tab(db, all_contracts)
@@ -1664,8 +1664,6 @@ def main():
                 
                 # Create subplots if multiple rows needed, otherwise single figure
                 if num_rows > 1:
-                    from plotly.subplots import make_subplots
-                    
                     # Create subplots with num_rows rows
                     fig_bins = make_subplots(
                         rows=num_rows,
@@ -1858,7 +1856,7 @@ def main():
                 st.markdown("---")
     
     with tab4:
-        st.subheader("Bins 2 (3D Cylinder Test)")
+        st.subheader("Bins 3D")
         
         # Crop year selector
         current_crop_year = get_current_crop_year()
@@ -1936,143 +1934,193 @@ def main():
                     available_capacity_list.append(available)
                     total_capacity_list.append(capacity)
                 
-                # Build the 3D figure
-                fig = go.Figure()
+                # Build the 3D figure (one scene per bin when multiple — same view as single-bin)
+                radius = 1.0
+                num_bins = len(bin_labels)
                 
-                bin_spacing = 3  # Space bins apart on x-axis
-                radius = 1  # Fixed radius
-                
-                # Find max value for scaling
                 max_bushels = max(max(current_storage_list) if current_storage_list else [0],
                                  max([c + a for c, a in zip(current_storage_list, available_capacity_list)]) if available_capacity_list else [0])
                 
-                # Scale factor to normalize heights
-                scale_factor = 0.01 if max_bushels > 0 else 0.001
+                scale_factor = 0.001
                 if max_bushels > 0:
                     scale_factor = 20.0 / max_bushels  # Scale so max is about 20 units tall
                 
-                # Get crop color
                 stored_color = crop_colors.get(crop, 'sienna')
                 
-                # Track legend entries
+                if num_bins <= 1:
+                    fig = go.Figure()
+                else:
+                    subplot_titles = []
+                    for lbl in bin_labels:
+                        title = lbl.split(' - ', 1)[-1] if ' - ' in lbl else lbl
+                        subplot_titles.append(title[:28] + ('…' if len(title) > 28 else ''))
+                    fig = make_subplots(
+                        rows=1,
+                        cols=num_bins,
+                        specs=[[{'type': 'scene'}] * num_bins],
+                        subplot_titles=subplot_titles,
+                        horizontal_spacing=0.04,
+                    )
+                
                 current_added = False
                 available_added = False
-                
+                label_pad_top = 1.8
+                pct_caption_lines = []
+
+                def _pct_full_text(current_val, capacity_val):
+                    if capacity_val > 0:
+                        return f"{(current_val / capacity_val) * 100:.0f}% full"
+                    if capacity_val == 0:
+                        return "Unlimited" if current_val > 0 else "Empty"
+                    return "Empty"
+
+                def _add_trace(trace):
+                    if num_bins <= 1:
+                        fig.add_trace(trace)
+                    else:
+                        fig.add_trace(trace, row=1, col=subplot_col)
+
+                def _top_label_text(current_val, capacity_val):
+                    if capacity_val > 0:
+                        return f"{current_val:,.0f} / {capacity_val:,.0f} bu"
+                    return f"{current_val:,.0f} / Unlimited bu"
+
+                def _add_bin_top_label(stack_height, current_val, capacity_val):
+                    """Top: current / capacity (% full is below the chart)."""
+                    z_top = stack_height + label_pad_top
+                    _add_trace(go.Scatter3d(
+                        x=[0], y=[0], z=[z_top],
+                        mode="text",
+                        text=[_top_label_text(current_val, capacity_val)],
+                        textfont=dict(size=24, color="#000000", family="Arial Black"),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ))
+
                 for idx, bin_label in enumerate(bin_labels):
-                    x_pos = idx * bin_spacing
+                    subplot_col = idx + 1
                     current_val = current_storage_list[idx]
                     available_val = available_capacity_list[idx]
                     capacity_val = total_capacity_list[idx]
+                    stored_height = current_val * scale_factor
+                    avail_height = (
+                        available_val * scale_factor
+                        if capacity_val > 0 and available_val > 0
+                        else 0.0
+                    )
+                    stack_height = max(stored_height + avail_height, stored_height, avail_height, 0.5)
                     
-                    # Bottom: Stored (crop-specific color, solid)
                     if current_val > 0:
-                        stored_height = current_val * scale_factor
-                        z_bottom = 0
-                        
-                        # Create cylinder surface
-                        x1, y1, z1 = cylinder(radius, stored_height, a=z_bottom, nt=50, nv=30)
-                        # Translate to x_pos
-                        x1 = x1 + x_pos
-                        
+                        x1, y1, z1 = cylinder(radius, stored_height, a=0, nt=50, nv=30)
                         colorscale_stored = [[0, stored_color], [1, stored_color]]
-                        cyl1 = go.Surface(
+                        _add_trace(go.Surface(
                             x=x1, y=y1, z=z1,
                             colorscale=colorscale_stored,
                             showscale=False,
                             opacity=0.8,
                             name='Current Storage' if not current_added else '',
-                            showlegend=(not current_added)
-                        )
-                        fig.add_trace(cyl1)
-                        
-                        # Add boundary circles for stored cylinder
-                        xb_low, yb_low, zb_low = boundary_circle(radius, h=z_bottom, nt=50)
-                        xb_up, yb_up, zb_up = boundary_circle(radius, h=z_bottom + stored_height, nt=50)
-                        xb_low = xb_low + x_pos
-                        xb_up = xb_up + x_pos
-                        
-                        bcircles1 = go.Scatter3d(
+                            showlegend=(not current_added),
+                        ))
+                        xb_low, yb_low, zb_low = boundary_circle(radius, h=0, nt=50)
+                        xb_up, yb_up, zb_up = boundary_circle(radius, h=stored_height, nt=50)
+                        _add_trace(go.Scatter3d(
                             x=xb_low.tolist() + [None] + xb_up.tolist(),
                             y=yb_low.tolist() + [None] + yb_up.tolist(),
                             z=zb_low.tolist() + [None] + zb_up.tolist(),
                             mode='lines',
                             line=dict(color=stored_color, width=2),
                             opacity=0.9,
-                            showlegend=False
-                        )
-                        fig.add_trace(bcircles1)
-                        
-                        if not current_added:
-                            current_added = True
+                            showlegend=False,
+                        ))
+                        current_added = True
                     
-                    # Top: Available (translucent gray)
                     if capacity_val > 0 and available_val > 0:
-                        avail_height = available_val * scale_factor
-                        stored_height = current_val * scale_factor
-                        z_bottom_avail = stored_height
-                        
-                        # Create cylinder surface for available
-                        x2, y2, z2 = cylinder(radius, avail_height, a=z_bottom_avail, nt=50, nv=30)
-                        # Translate to x_pos
-                        x2 = x2 + x_pos
-                        
-                        colorscale_avail = [[0, 'lightgray'], [1, 'lightgray']]
-                        cyl2 = go.Surface(
+                        x2, y2, z2 = cylinder(radius, avail_height, a=stored_height, nt=50, nv=30)
+                        _add_trace(go.Surface(
                             x=x2, y=y2, z=z2,
-                            colorscale=colorscale_avail,
+                            colorscale=[[0, 'lightgray'], [1, 'lightgray']],
                             showscale=False,
                             opacity=0.5,
                             name='Available Capacity' if not available_added else '',
-                            showlegend=(not available_added)
-                        )
-                        fig.add_trace(cyl2)
-                        
-                        # Add boundary circles for available cylinder
-                        xb_low, yb_low, zb_low = boundary_circle(radius, h=z_bottom_avail, nt=50)
-                        xb_up, yb_up, zb_up = boundary_circle(radius, h=z_bottom_avail + avail_height, nt=50)
-                        xb_low = xb_low + x_pos
-                        xb_up = xb_up + x_pos
-                        
-                        bcircles2 = go.Scatter3d(
+                            showlegend=(not available_added),
+                        ))
+                        xb_low, yb_low, zb_low = boundary_circle(radius, h=stored_height, nt=50)
+                        xb_up, yb_up, zb_up = boundary_circle(radius, h=stored_height + avail_height, nt=50)
+                        _add_trace(go.Scatter3d(
                             x=xb_low.tolist() + [None] + xb_up.tolist(),
                             y=yb_low.tolist() + [None] + yb_up.tolist(),
                             z=zb_low.tolist() + [None] + zb_up.tolist(),
                             mode='lines',
                             line=dict(color='gray', width=2),
                             opacity=0.6,
-                            showlegend=False
-                        )
-                        fig.add_trace(bcircles2)
-                        
-                        if not available_added:
-                            available_added = True
+                            showlegend=False,
+                        ))
+                        available_added = True
+
+                    _add_bin_top_label(stack_height, current_val, capacity_val)
+                    pct_caption_lines.append(_pct_full_text(current_val, capacity_val))
                 
-                # Layout: 3D scene
-                max_height = max_bushels * scale_factor if max_bushels > 0 else 20
-                x_range_max = (len(bin_labels) - 1) * bin_spacing + 2
-                
-                # Layout with orthographic projection (as in user's example)
-                layout = go.Layout(
-                    scene=dict(
+                legend_cfg = dict(yanchor="top", y=0.99, xanchor="left", x=1.01)
+                layout_margin = dict(l=10, r=10, t=45, b=0)
+                if num_bins <= 1:
+                    z_top = stack_height + label_pad_top + 0.5
+                    fig.update_layout(
+                        title=f'{crop} - 3D Bin Storage',
+                        height=580,
+                        margin=layout_margin,
+                        legend=legend_cfg,
+                        scene=dict(
+                            xaxis=dict(visible=False),
+                            yaxis=dict(visible=False),
+                            zaxis=dict(range=[0, z_top], visible=False),
+                            aspectmode='cube',
+                            camera=dict(eye=dict(x=1.5, y=1.5, z=0.55)),
+                        ),
+                    )
+                    fig.layout.scene.camera.projection.type = "orthographic"
+                else:
+                    max_stack_z = max(
+                        (current_storage_list[i] + available_capacity_list[i]) * scale_factor
+                        for i in range(num_bins)
+                    ) if num_bins else 20.0
+                    max_stack_z = max(max_stack_z, radius * 2) * 1.05 + label_pad_top
+                    fig.update_scenes(
                         xaxis_visible=False,
                         yaxis_visible=False,
-                        zaxis_visible=False,
+                        zaxis=dict(range=[0, max_stack_z], visible=False),
                         aspectmode='cube',
-                        camera=dict(eye=dict(x=1.5, y=1.5, z=0.55))
-                    ),
-                    title=f'{crop} - 3D Bin Storage (Test View)',
-                    height=600,
-                    legend=dict(
-                        yanchor="top",
-                        y=0.99,
-                        xanchor="left",
-                        x=1.01
+                        camera=dict(eye=dict(x=1.5, y=1.5, z=0.55)),
                     )
-                )
-                fig.update_layout(layout)
-                fig.layout.scene.camera.projection.type = "orthographic"
+                    for scene_idx in range(num_bins):
+                        scene_ref = fig.layout.scene if scene_idx == 0 else getattr(fig.layout, f'scene{scene_idx + 1}')
+                        scene_ref.camera.projection.type = "orthographic"
+                    fig.update_layout(
+                        title=f'{crop} - 3D Bin Storage',
+                        height=480,
+                        margin=layout_margin,
+                        legend=legend_cfg,
+                    )
                 
                 st.plotly_chart(fig, width='stretch')
+                caption_style = (
+                    "text-align:center;font-size:1.35rem;font-weight:700;"
+                    "font-family:Arial Black,sans-serif;margin:0;padding:0;line-height:1.2;"
+                )
+                caption_wrap = "margin-top:-1.25rem;margin-bottom:0.25rem;"
+                if num_bins <= 1:
+                    st.markdown(
+                        f"<div style='{caption_wrap}'><p style='{caption_style}'>"
+                        f"{pct_caption_lines[0]}</p></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    cap_cols = st.columns(num_bins)
+                    for cap_col, pct_text in zip(cap_cols, pct_caption_lines):
+                        cap_col.markdown(
+                            f"<div style='{caption_wrap}'><p style='{caption_style}'>"
+                            f"{pct_text}</p></div>",
+                            unsafe_allow_html=True,
+                        )
                 st.markdown("---")
     
     with tab5:
