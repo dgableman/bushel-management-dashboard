@@ -85,7 +85,7 @@ if PROJECT_PATH not in sys.path:
 from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
-from reports.bin_queries import get_bins_with_storage_by_crop
+from reports.bin_queries import get_bins_with_storage_by_crop, get_bin_storage_metrics
 from reports.commodity_utils import (
     normalize_commodity_name,
     get_commodities_for_normalized_name,
@@ -317,6 +317,57 @@ def get_drilldown_details(
         }
     
     return details
+
+
+BIN_SETTLED_COLOR = '#95a5a6'
+BIN_CONTRACTED_COLOR = '#9b59b6'
+
+
+def add_bins_stacked_bar_traces(
+    fig,
+    x_labels,
+    settled,
+    contracted,
+    initial,
+    available,
+    initial_colors,
+    initial_line_colors,
+    bar_width,
+    show_legend=True,
+    legend_suffix='',
+    subplot_row=None,
+    subplot_col=None,
+):
+    """Stacked bar segments: Settled, Contracted, Initial, then Available capacity."""
+    width = [bar_width] * len(x_labels)
+    traces = [
+        ('Settled', settled, BIN_SETTLED_COLOR, '#7f8c8d', 'Settled: %{y:,.0f} bu'),
+        ('Contracted', contracted, BIN_CONTRACTED_COLOR, '#7d3c98', 'Contracted: %{y:,.0f} bu'),
+        ('Initial', initial, initial_colors, initial_line_colors, 'Initial: %{y:,.0f} bu'),
+        ('Available Capacity', available, '#2ecc71', '#27ae60', 'Available Capacity: %{y:,.0f} bu'),
+    ]
+    for idx, (name, y, color, line_color, hover_key) in enumerate(traces):
+        legend_name = f'{legend_suffix}{name}'.strip() if legend_suffix else name
+        marker = dict(
+            color=color,
+            line=dict(color=line_color, width=1),
+            cornerradius=0.2,
+        )
+        trace = go.Bar(
+            x=x_labels,
+            y=y,
+            name=legend_name,
+            orientation='v',
+            marker=marker,
+            hovertemplate=f'<b>%{{x}}</b><br>{hover_key}<extra></extra>',
+            showlegend=show_legend and idx == 0,
+            width=width,
+            text=[''] * len(x_labels),
+        )
+        if subplot_row is not None:
+            fig.add_trace(trace, row=subplot_row, col=subplot_col)
+        else:
+            fig.add_trace(trace)
 
 
 @st.cache_resource
@@ -1552,12 +1603,14 @@ def main():
                 
                 # Prepare data for stacked bar chart
                 bin_labels = []
-                current_storage = []  # x - bushels in bin
-                available_capacity = []  # y - available bushels to store
-                total_capacity = []  # z - total capacity
+                settled_storage = []
+                contracted_storage = []
+                initial_storage = []
+                current_storage = []
+                available_capacity = []
+                total_capacity = []
                 
                 for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
-                    # Create bin label - include crop name if viewing by location
                     if view_mode == "View by Location":
                         if crop_storage and hasattr(crop_storage, 'crop') and crop_storage.crop:
                             bin_label = f"{bin_name.bin_name} ({crop_storage.crop})"
@@ -1567,24 +1620,13 @@ def main():
                         bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
                     
-                    # x: Current storage bushels from crop_storage (0 if no storage record)
-                    if crop_storage and hasattr(crop_storage, 'current_content'):
-                        current = crop_storage.current_content or 0
-                    else:
-                        current = 0
-                    current_storage.append(float(current))
-                    
-                    # z: Total capacity from bin_name
-                    capacity = bin_name.capacity or 0
-                    total_capacity.append(float(capacity))
-                    
-                    # y: Available capacity (z - x)
-                    # If capacity is 0, it's infinite capacity - available is always 0 (don't show available)
-                    if capacity == 0:
-                        available = 0.0  # Infinite capacity bins - no available capacity to show
-                    else:
-                        available = max(0.0, float(capacity) - float(current))
-                    available_capacity.append(available)
+                    metrics = get_bin_storage_metrics(crop_storage, bin_name)
+                    settled_storage.append(metrics['settled'])
+                    contracted_storage.append(metrics['contracted'])
+                    initial_storage.append(metrics['initial'])
+                    current_storage.append(metrics['current'])
+                    available_capacity.append(metrics['available'])
+                    total_capacity.append(metrics['capacity'])
                 
                 # Calculate bins per row - aim for ~2 inches per bin (assuming ~12 inch wide screen)
                 # Approximately 4-5 bins per row to allow for ~2 inch width each
@@ -1666,17 +1708,25 @@ def main():
                     cap = total_capacity[i]
                     cur = current_storage[i]
                     if cap > 0:
-                        line1 = f"{cur:,.0f} / {cap:,.0f} bu"
+                        cap_line = f"Current: {cur:,.0f} / {cap:,.0f} bu"
                     else:
-                        line1 = f"{cur:,.0f} / Unlimited"
-                    return f"{line1}<br>{percentages_full[i]}"
+                        cap_line = f"Current: {cur:,.0f} / Unlimited"
+                    return (
+                        f"Initial: {initial_storage[i]:,.0f} bu<br>"
+                        f"Contracted: {contracted_storage[i]:,.0f} bu<br>"
+                        f"Settled: {settled_storage[i]:,.0f} bu<br>"
+                        f"{cap_line}<br>{percentages_full[i]}"
+                    )
 
                 def _add_bar_top_annotations(
                     fig_bins, *, use_subplot_grid=False, row_num=1, col_num=1, label_slice=None
                 ):
                     indices = label_slice if label_slice is not None else range(len(bin_labels))
                     for i in indices:
-                        total_y = current_storage[i] + available_capacity[i]
+                        total_y = (
+                            settled_storage[i] + contracted_storage[i]
+                            + initial_storage[i] + available_capacity[i]
+                        )
                         ann = dict(
                             x=bin_labels[i],
                             y=total_y,
@@ -1710,43 +1760,22 @@ def main():
                         
                         if start_idx < len(bin_labels):
                             row_bin_labels = bin_labels[start_idx:end_idx]
-                            row_current = current_storage[start_idx:end_idx]
-                            row_available = available_capacity[start_idx:end_idx]
-                            
-                            # Current storage (crop-specific color)
                             row_colors = bin_colors[start_idx:end_idx] if isinstance(bin_colors, list) else current_color
                             row_line_colors = bin_line_colors[start_idx:end_idx] if isinstance(bin_line_colors, list) else current_line_color
-                            fig_bins.add_trace(go.Bar(
-                                x=row_bin_labels,
-                                y=row_current,
-                                name='Current Storage' if row_idx == 0 else '',
-                                orientation='v',
-                                marker=dict(
-                                    color=row_colors,
-                                    line=dict(color=row_line_colors, width=1),
-                                    cornerradius=0.2
-                                ),
-                                hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
-                                showlegend=(row_idx == 0),
-                                width=[uniform_bar_width] * len(row_bin_labels),  # Uniform width
-                            ), row=row_idx+1, col=1)
-                            
-                            # Available capacity (green)
-                            fig_bins.add_trace(go.Bar(
-                                x=row_bin_labels,
-                                y=row_available,
-                                name='Available Capacity' if row_idx == 0 else '',
-                                orientation='v',
-                                marker=dict(
-                                    color='#2ecc71',
-                                    line=dict(color='#27ae60', width=1),
-                                    cornerradius=0.2
-                                ),
-                                hovertemplate='<b>%{x}</b><br>Available Capacity: %{y:,.0f} bu<extra></extra>',
-                                showlegend=(row_idx == 0),
-                                width=[uniform_bar_width] * len(row_bin_labels),  # Uniform width
-                                text=[''] * len(row_bin_labels)  # No text on available capacity
-                            ), row=row_idx+1, col=1)
+                            add_bins_stacked_bar_traces(
+                                fig_bins,
+                                row_bin_labels,
+                                settled_storage[start_idx:end_idx],
+                                contracted_storage[start_idx:end_idx],
+                                initial_storage[start_idx:end_idx],
+                                available_capacity[start_idx:end_idx],
+                                row_colors,
+                                row_line_colors,
+                                uniform_bar_width,
+                                show_legend=(row_idx == 0),
+                                subplot_row=row_idx + 1,
+                                subplot_col=1,
+                            )
                             _add_bar_top_annotations(
                                 fig_bins,
                                 use_subplot_grid=True,
@@ -1798,38 +1827,20 @@ def main():
                     # Single row - create regular figure
                     fig_bins = go.Figure()
                     
-                    # Bottom stack: Current storage (crop-specific color)
                     bar_colors = bin_colors if isinstance(bin_colors, list) else current_color
                     bar_line_colors = bin_line_colors if isinstance(bin_line_colors, list) else current_line_color
-                    fig_bins.add_trace(go.Bar(
-                        x=bin_labels,
-                        y=current_storage,
-                        name='Current Storage',
-                        orientation='v',
-                        marker=dict(
-                            color=bar_colors,
-                            line=dict(color=bar_line_colors, width=1),
-                            cornerradius=0.2
-                        ),
-                        hovertemplate='<b>%{x}</b><br>Current Storage: %{y:,.0f} bu<extra></extra>',
-                        width=[uniform_bar_width] * len(bin_labels),  # Uniform width for all bars
-                    ))
-                    
-                    # Top stack: Available capacity (green)
-                    fig_bins.add_trace(go.Bar(
-                        x=bin_labels,
-                        y=available_capacity,
-                        name='Available Capacity',
-                        orientation='v',
-                        marker=dict(
-                            color='#2ecc71',
-                            line=dict(color='#27ae60', width=1),
-                            cornerradius=0.2
-                        ),
-                        hovertemplate='<b>%{x}</b><br>Available Capacity: %{y:,.0f} bu<extra></extra>',
-                        width=[uniform_bar_width] * len(bin_labels),  # Uniform width for all bars
-                        text=[''] * len(bin_labels)  # No text on available capacity
-                    ))
+                    add_bins_stacked_bar_traces(
+                        fig_bins,
+                        bin_labels,
+                        settled_storage,
+                        contracted_storage,
+                        initial_storage,
+                        available_capacity,
+                        bar_colors,
+                        bar_line_colors,
+                        uniform_bar_width,
+                        show_legend=True,
+                    )
                     
                     # Update layout - for single or few bins, use larger gap to prevent fat bars
                     num_bins = len(bin_labels)
@@ -1970,6 +1981,9 @@ def main():
                 
                 # Prepare data
                 bin_labels = []
+                settled_storage_list = []
+                contracted_storage_list = []
+                initial_storage_list = []
                 current_storage_list = []
                 available_capacity_list = []
                 total_capacity_list = []
@@ -1977,17 +1991,13 @@ def main():
                 for bin_name, crop_storage in sorted(crop_bins, key=lambda b: (b[0].location, b[0].bin_name)):
                     bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
-                    
-                    if crop_storage and hasattr(crop_storage, 'current_content'):
-                        current = float(crop_storage.current_content or 0)
-                    else:
-                        current = 0.0
-                    capacity = float(bin_name.capacity or 0)
-                    available = 0.0 if capacity == 0 else max(0.0, capacity - current)
-                    
-                    current_storage_list.append(current)
-                    available_capacity_list.append(available)
-                    total_capacity_list.append(capacity)
+                    metrics = get_bin_storage_metrics(crop_storage, bin_name)
+                    settled_storage_list.append(metrics['settled'])
+                    contracted_storage_list.append(metrics['contracted'])
+                    initial_storage_list.append(metrics['initial'])
+                    current_storage_list.append(metrics['current'])
+                    available_capacity_list.append(metrics['available'])
+                    total_capacity_list.append(metrics['capacity'])
                 
                 # Build the 3D figure (one scene per bin when multiple — same view as single-bin)
                 radius = 1.0
@@ -2017,7 +2027,9 @@ def main():
                         horizontal_spacing=0.04,
                     )
                 
-                current_added = False
+                settled_added = False
+                contracted_added = False
+                initial_added = False
                 available_added = False
                 label_pad_top = 1.8
                 pct_caption_lines = []
@@ -2035,84 +2047,95 @@ def main():
                     else:
                         fig.add_trace(trace, row=1, col=subplot_col)
 
-                def _top_label_text(current_val, capacity_val):
+                def _top_label_text(initial_val, contracted_val, settled_val, current_val, capacity_val):
+                    lines = [
+                        f"Initial: {initial_val:,.0f} bu",
+                        f"Contracted: {contracted_val:,.0f} bu",
+                        f"Settled: {settled_val:,.0f} bu",
+                    ]
                     if capacity_val > 0:
-                        return f"{current_val:,.0f} / {capacity_val:,.0f} bu"
-                    return f"{current_val:,.0f} / Unlimited bu"
+                        lines.append(f"Current: {current_val:,.0f} / {capacity_val:,.0f} bu")
+                    else:
+                        lines.append(f"Current: {current_val:,.0f} / Unlimited bu")
+                    return "<br>".join(lines)
 
-                def _add_bin_top_label(stack_height, current_val, capacity_val):
-                    """Top: current / capacity (% full is below the chart)."""
+                def _add_bin_top_label(stack_height, initial_val, contracted_val, settled_val, current_val, capacity_val):
                     z_top = stack_height + label_pad_top
                     _add_trace(go.Scatter3d(
                         x=[0], y=[0], z=[z_top],
                         mode="text",
-                        text=[_top_label_text(current_val, capacity_val)],
-                        textfont=dict(size=24, color="#000000", family="Arial Black"),
+                        text=[_top_label_text(initial_val, contracted_val, settled_val, current_val, capacity_val)],
+                        textfont=dict(size=18, color="#000000", family="Arial Black"),
                         showlegend=False,
                         hoverinfo="skip",
                     ))
 
+                def _add_cylinder_segment(height, z_base, color, legend_name, show_in_legend):
+                    if height <= 0:
+                        return z_base
+                    x1, y1, z1 = cylinder(radius, height, a=z_base, nt=50, nv=30)
+                    _add_trace(go.Surface(
+                        x=x1, y=y1, z=z1,
+                        colorscale=[[0, color], [1, color]],
+                        showscale=False,
+                        opacity=0.8,
+                        name=legend_name,
+                        showlegend=show_in_legend,
+                    ))
+                    xb_low, yb_low, zb_low = boundary_circle(radius, h=z_base, nt=50)
+                    xb_up, yb_up, zb_up = boundary_circle(radius, h=z_base + height, nt=50)
+                    _add_trace(go.Scatter3d(
+                        x=xb_low.tolist() + [None] + xb_up.tolist(),
+                        y=yb_low.tolist() + [None] + yb_up.tolist(),
+                        z=zb_low.tolist() + [None] + zb_up.tolist(),
+                        mode='lines',
+                        line=dict(color=color, width=2),
+                        opacity=0.9,
+                        showlegend=False,
+                    ))
+                    return z_base + height
+
                 for idx, bin_label in enumerate(bin_labels):
                     subplot_col = idx + 1
+                    settled_val = settled_storage_list[idx]
+                    contracted_val = contracted_storage_list[idx]
+                    initial_val = initial_storage_list[idx]
                     current_val = current_storage_list[idx]
                     available_val = available_capacity_list[idx]
                     capacity_val = total_capacity_list[idx]
-                    stored_height = current_val * scale_factor
+                    
+                    z_base = 0.0
+                    if settled_val > 0:
+                        z_base = _add_cylinder_segment(
+                            settled_val * scale_factor, z_base, BIN_SETTLED_COLOR, 'Settled', not settled_added
+                        )
+                        settled_added = True
+                    if contracted_val > 0:
+                        z_base = _add_cylinder_segment(
+                            contracted_val * scale_factor, z_base, BIN_CONTRACTED_COLOR, 'Contracted', not contracted_added
+                        )
+                        contracted_added = True
+                    if initial_val > 0:
+                        z_base = _add_cylinder_segment(
+                            initial_val * scale_factor, z_base, stored_color, 'Initial', not initial_added
+                        )
+                        initial_added = True
+                    
                     avail_height = (
                         available_val * scale_factor
                         if capacity_val > 0 and available_val > 0
                         else 0.0
                     )
-                    stack_height = max(stored_height + avail_height, stored_height, avail_height, 0.5)
-                    
-                    if current_val > 0:
-                        x1, y1, z1 = cylinder(radius, stored_height, a=0, nt=50, nv=30)
-                        colorscale_stored = [[0, stored_color], [1, stored_color]]
-                        _add_trace(go.Surface(
-                            x=x1, y=y1, z=z1,
-                            colorscale=colorscale_stored,
-                            showscale=False,
-                            opacity=0.8,
-                            name='Current Storage' if not current_added else '',
-                            showlegend=(not current_added),
-                        ))
-                        xb_low, yb_low, zb_low = boundary_circle(radius, h=0, nt=50)
-                        xb_up, yb_up, zb_up = boundary_circle(radius, h=stored_height, nt=50)
-                        _add_trace(go.Scatter3d(
-                            x=xb_low.tolist() + [None] + xb_up.tolist(),
-                            y=yb_low.tolist() + [None] + yb_up.tolist(),
-                            z=zb_low.tolist() + [None] + zb_up.tolist(),
-                            mode='lines',
-                            line=dict(color=stored_color, width=2),
-                            opacity=0.9,
-                            showlegend=False,
-                        ))
-                        current_added = True
-                    
-                    if capacity_val > 0 and available_val > 0:
-                        x2, y2, z2 = cylinder(radius, avail_height, a=stored_height, nt=50, nv=30)
-                        _add_trace(go.Surface(
-                            x=x2, y=y2, z=z2,
-                            colorscale=[[0, 'lightgray'], [1, 'lightgray']],
-                            showscale=False,
-                            opacity=0.5,
-                            name='Available Capacity' if not available_added else '',
-                            showlegend=(not available_added),
-                        ))
-                        xb_low, yb_low, zb_low = boundary_circle(radius, h=stored_height, nt=50)
-                        xb_up, yb_up, zb_up = boundary_circle(radius, h=stored_height + avail_height, nt=50)
-                        _add_trace(go.Scatter3d(
-                            x=xb_low.tolist() + [None] + xb_up.tolist(),
-                            y=yb_low.tolist() + [None] + yb_up.tolist(),
-                            z=zb_low.tolist() + [None] + zb_up.tolist(),
-                            mode='lines',
-                            line=dict(color='gray', width=2),
-                            opacity=0.6,
-                            showlegend=False,
-                        ))
+                    if avail_height > 0:
+                        z_base = _add_cylinder_segment(
+                            avail_height, z_base, 'lightgray', 'Available Capacity', not available_added
+                        )
                         available_added = True
-
-                    _add_bin_top_label(stack_height, current_val, capacity_val)
+                    
+                    stack_height = max(z_base, 0.5)
+                    _add_bin_top_label(
+                        stack_height, initial_val, contracted_val, settled_val, current_val, capacity_val
+                    )
                     pct_caption_lines.append(_pct_full_text(current_val, capacity_val))
                 
                 legend_cfg = dict(yanchor="top", y=0.99, xanchor="left", x=1.01)
@@ -2135,7 +2158,10 @@ def main():
                     fig.layout.scene.camera.projection.type = "orthographic"
                 else:
                     max_stack_z = max(
-                        (current_storage_list[i] + available_capacity_list[i]) * scale_factor
+                        (
+                            settled_storage_list[i] + contracted_storage_list[i]
+                            + initial_storage_list[i] + available_capacity_list[i]
+                        ) * scale_factor
                         for i in range(num_bins)
                     ) if num_bins else 20.0
                     max_stack_z = max(max_stack_z, radius * 2) * 1.05 + label_pad_top

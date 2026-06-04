@@ -136,3 +136,26 @@ def get_bins_with_storage_by_location(db: Session, crop_year: int, include_empty
         import logging
         logging.error(f"Error in get_bins_with_storage_by_location: {e}")
         return {}
+
+
+def get_bin_storage_metrics(crop_storage, bin_name) -> dict:
+    """
+    Bushel metrics for bin charts: initial, contracted, settled, and capacity fill.
+    Available space is based on physical current_content vs capacity.
+    """
+    current = initial = settled = contracted = 0
+    if crop_storage is not None:
+        current = int(getattr(crop_storage, 'current_content', 0) or 0)
+        initial = int(getattr(crop_storage, 'initial_content', 0) or 0)
+        settled = int(getattr(crop_storage, 'settled_bushels', 0) or 0)
+        contracted = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
+    capacity = int(bin_name.capacity or 0) if bin_name else 0
+    available = 0.0 if capacity == 0 else max(0.0, float(capacity) - float(current))
+    return {
+        'current': float(current),
+        'initial': float(initial),
+        'settled': float(settled),
+        'contracted': float(contracted),
+        'available': available,
+        'capacity': float(capacity),
+    }
