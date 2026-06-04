@@ -1877,10 +1877,23 @@ def main():
                         capacity = bin_name.capacity or 0
                         available = float(current) if capacity == 0 else max(0.0, float(capacity) - float(current))
                         
+                        initial = 0
+                        settled = 0
+                        contracted = 0
+                        if crop_storage:
+                            if hasattr(crop_storage, 'initial_content'):
+                                initial = crop_storage.initial_content or 0
+                            if hasattr(crop_storage, 'settled_bushels'):
+                                settled = crop_storage.settled_bushels or 0
+                            if hasattr(crop_storage, 'contracted_bushels'):
+                                contracted = crop_storage.contracted_bushels or 0
                         row_data = {
                             'Location': bin_name.location or 'N/A',
                             'Bin Name': bin_name.bin_name or 'N/A',
-                            'Current Storage (bu)': f"{current:,.0f}",
+                            'Initial (bu)': f"{initial:,.0f}",
+                            'Current (bu)': f"{current:,.0f}",
+                            'Settled (bu)': f"{settled:,.0f}",
+                            'Contracted (bu)': f"{contracted:,.0f}",
                             'Available Capacity (bu)': f"{available:,.0f}",
                             'Total Capacity (bu)': f"{capacity:,.0f}",
                             'Preferred Crop': bin_name.preferred_crop if hasattr(bin_name, 'preferred_crop') else 'N/A',

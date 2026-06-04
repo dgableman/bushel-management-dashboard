@@ -211,6 +211,8 @@ class CropStorage(Base):
     crop = Column(String, nullable=False)
     initial_content = Column(Integer, nullable=False)
     current_content = Column(Integer, nullable=False)
+    settled_bushels = Column(Integer, nullable=False, default=0)
+    contracted_bushels = Column(Integer, nullable=False, default=0)
     load_status = Column(String, nullable=False)  # Complete, Partial, etc.
     type = Column(String, nullable=False)  # Actual, Estimate, etc.
     created_at = Column(DateTime, nullable=True)
