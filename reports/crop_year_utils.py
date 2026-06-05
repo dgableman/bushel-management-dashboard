@@ -2,12 +2,115 @@
 Utilities for crop year calculations and sales reporting.
 """
 from datetime import date, datetime
-from typing import Tuple, List
+from typing import Tuple, List, Iterable, Set, Optional
 from sqlalchemy.orm import Session
 from database.models import (
     Contract, Settlement, CropTotals, HarvestActual
 )
 from reports.commodity_utils import normalize_commodity_name
+
+# Earliest year shown in Streamlit crop/calendar year selectors
+MIN_DISPLAY_YEAR = 2025
+
+MONTH_NAMES_SHORT = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+
+
+def get_display_year_options(current_crop_year: Optional[int] = None) -> List[int]:
+    """Crop year dropdown options from MIN_DISPLAY_YEAR through current crop year + 2."""
+    if current_crop_year is None:
+        current_crop_year = get_current_crop_year()
+    start = max(MIN_DISPLAY_YEAR, current_crop_year - 2)
+    end = current_crop_year + 2
+    return list(range(start, end + 1))
+
+
+def get_display_calendar_year_options(reference_year: Optional[int] = None) -> List[int]:
+    """Calendar year dropdown options from MIN_DISPLAY_YEAR through reference year + 2."""
+    if reference_year is None:
+        reference_year = date.today().year
+    start = max(MIN_DISPLAY_YEAR, reference_year - 2)
+    end = reference_year + 2
+    return list(range(start, end + 1))
+
+
+def format_delivery_month_key(d: date) -> str:
+    """Format a date as 'Jun 2026' for contract delivery-month filters."""
+    return f"{MONTH_NAMES_SHORT[d.month - 1]} {d.year}"
+
+
+def sort_delivery_month_keys(month_keys: Iterable[str]) -> List[str]:
+    return sorted(
+        month_keys,
+        key=lambda x: (int(x.split()[1]), MONTH_NAMES_SHORT.index(x.split()[0])),
+    )
+
+
+def discover_contract_crop_years(contracts: Iterable[Contract]) -> List[int]:
+    years: Set[int] = set()
+    for contract in contracts:
+        if contract.delivery_start:
+            cy = get_crop_year_from_date(contract.delivery_start)
+            if cy and cy >= MIN_DISPLAY_YEAR:
+                years.add(cy)
+    if not years:
+        years.add(max(MIN_DISPLAY_YEAR, get_current_crop_year()))
+    return sorted(years)
+
+
+def discover_contract_calendar_years(contracts: Iterable[Contract]) -> List[int]:
+    years: Set[int] = set()
+    for contract in contracts:
+        if contract.delivery_start and contract.delivery_start.year >= MIN_DISPLAY_YEAR:
+            years.add(contract.delivery_start.year)
+    if not years:
+        years.add(max(MIN_DISPLAY_YEAR, date.today().year))
+    return sorted(years)
+
+
+def delivery_months_for_year_selection(
+    contracts: Iterable[Contract],
+    year_basis: str,
+    selected_years: List[int],
+) -> List[str]:
+    """
+    Delivery months present on contracts matching the selected crop or calendar years.
+    """
+    if not selected_years:
+        return []
+    selected = set(selected_years)
+    months: Set[str] = set()
+    for contract in contracts:
+        ds = contract.delivery_start
+        if not ds:
+            continue
+        if year_basis == "Crop Year":
+            cy = get_crop_year_from_date(ds)
+            if cy not in selected or not is_date_in_crop_year(ds, cy):
+                continue
+        else:
+            if ds.year not in selected:
+                continue
+        months.add(format_delivery_month_key(ds))
+    return sort_delivery_month_keys(months)
+
+
+def contract_matches_year_basis(
+    delivery_start: Optional[date],
+    year_basis: str,
+    selected_years: List[int],
+) -> bool:
+    """True if contract passes crop-year or calendar-year filter (or filter is empty)."""
+    if not selected_years:
+        return True
+    if not delivery_start:
+        return False
+    if year_basis == "Crop Year":
+        cy = get_crop_year_from_date(delivery_start)
+        return cy in selected_years
+    return delivery_start.year in selected_years
 
 
 def get_crop_year_from_date(d: date) -> int:

@@ -153,6 +153,10 @@ def calculate_monthly_deliveries(
         
         # Group settlements by month
         for settlement in settlements_in_year:
+            # Header rows carry the settled totals; line items would double-count.
+            if (settlement.status or '').strip().lower() != 'header':
+                continue
+
             normalized_crop = normalize_commodity_name(db, settlement.commodity)
             if normalized_crop != crop:
                 continue
@@ -176,6 +180,10 @@ def calculate_monthly_deliveries(
         
         # Group contracts by month (delivery_start month)
         for contract in contracts_in_year:
+            # Only Active contracts count toward open deliveries (matches Crop Year Sales).
+            if (contract.status or '').strip().lower() != 'active':
+                continue
+
             normalized_crop = normalize_commodity_name(db, contract.commodity)
             if normalized_crop != crop:
                 continue

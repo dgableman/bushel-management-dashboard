@@ -92,7 +92,18 @@ from reports.commodity_utils import (
     get_all_normalized_commodities
 )
 from reports.vendor_utils import normalize_vendor_name, get_all_normalized_vendors
-from reports.crop_year_utils import get_current_crop_year, get_crop_year_date_range, get_crop_year_from_date
+from reports.crop_year_utils import (
+    get_current_crop_year,
+    get_crop_year_date_range,
+    get_crop_year_from_date,
+    get_display_year_options,
+    get_display_calendar_year_options,
+    discover_contract_crop_years,
+    discover_contract_calendar_years,
+    delivery_months_for_year_selection,
+    contract_matches_year_basis,
+    format_delivery_month_key,
+)
 from reports.crop_year_sales import calculate_crop_year_sales
 from reports.monthly_deliveries import (
     calculate_monthly_deliveries,
@@ -321,6 +332,56 @@ def get_drilldown_details(
 
 BIN_SETTLED_COLOR = '#95a5a6'
 BIN_CONTRACTED_COLOR = '#9b59b6'
+BIN_CAPTION_STYLE = (
+    "text-align:center;font-size:1.35rem;font-weight:700;"
+    "font-family:Arial Black,sans-serif;margin:0;padding:0;line-height:1.2;"
+)
+BIN_CAPTION_WRAP = "margin-top:-1.25rem;margin-bottom:0.25rem;"
+
+
+def _short_bin_title(label: str) -> str:
+    title = label.split(' - ', 1)[-1] if ' - ' in label else label
+    return title[:28] + ('…' if len(title) > 28 else '')
+
+
+def _bin_metrics_label_text(metrics: dict) -> str:
+    """Top-of-bar metrics (availability shown separately below the chart)."""
+    if metrics['is_unlimited']:
+        cap_line = f"Current: {metrics['current']:,.0f} / {metrics['reference']:,.0f} bu (unlimited)"
+    elif metrics['capacity'] > 0:
+        cap_line = f"Current: {metrics['current']:,.0f} / {metrics['capacity']:,.0f} bu"
+    else:
+        cap_line = f"Current: {metrics['current']:,.0f} bu"
+    contracted_raw = metrics.get('contracted_raw', metrics['contracted'])
+    return (
+        f"Initial: {metrics['initial']:,.0f} bu<br>"
+        f"Contracted: {contracted_raw:,.0f} bu<br>"
+        f"Settled: {metrics['settled']:,.0f} bu<br>"
+        f"{cap_line}"
+    )
+
+
+def _availability_caption_text(label: str) -> str:
+    return label.replace('\n', ' — ')
+
+
+def _render_bin_availability_captions(availability_labels: list):
+    if not availability_labels:
+        return
+    if len(availability_labels) == 1:
+        st.markdown(
+            f"<div style='{BIN_CAPTION_WRAP}'><p style='{BIN_CAPTION_STYLE}'>"
+            f"{_availability_caption_text(availability_labels[0])}</p></div>",
+            unsafe_allow_html=True,
+        )
+        return
+    cap_cols = st.columns(len(availability_labels))
+    for cap_col, avail_text in zip(cap_cols, availability_labels):
+        cap_col.markdown(
+            f"<div style='{BIN_CAPTION_WRAP}'><p style='{BIN_CAPTION_STYLE}'>"
+            f"{_availability_caption_text(avail_text)}</p></div>",
+            unsafe_allow_html=True,
+        )
 
 
 def add_bins_stacked_bar_traces(
@@ -328,23 +389,24 @@ def add_bins_stacked_bar_traces(
     x_labels,
     settled,
     contracted,
-    initial,
-    available,
-    initial_colors,
-    initial_line_colors,
+    uncontracted,
+    empty_space,
+    crop_colors,
+    crop_line_colors,
+    empty_colors,
     bar_width,
     show_legend=True,
     legend_suffix='',
     subplot_row=None,
     subplot_col=None,
 ):
-    """Stacked bar segments: Settled, Contracted, Initial, then Available capacity."""
+    """Stacked bar segments: Settled, Contracted, Uncontracted in-bin, then Empty."""
     width = [bar_width] * len(x_labels)
     traces = [
         ('Settled', settled, BIN_SETTLED_COLOR, '#7f8c8d', 'Settled: %{y:,.0f} bu'),
         ('Contracted', contracted, BIN_CONTRACTED_COLOR, '#7d3c98', 'Contracted: %{y:,.0f} bu'),
-        ('Initial', initial, initial_colors, initial_line_colors, 'Initial: %{y:,.0f} bu'),
-        ('Available Capacity', available, '#2ecc71', '#27ae60', 'Available Capacity: %{y:,.0f} bu'),
+        ('Uncontracted', uncontracted, crop_colors, crop_line_colors, 'Uncontracted: %{y:,.0f} bu'),
+        ('Empty', empty_space, empty_colors, empty_colors, 'Empty: %{y:,.0f} bu'),
     ]
     for idx, (name, y, color, line_color, hover_key) in enumerate(traces):
         legend_name = f'{legend_suffix}{name}'.strip() if legend_suffix else name
@@ -360,7 +422,7 @@ def add_bins_stacked_bar_traces(
             orientation='v',
             marker=marker,
             hovertemplate=f'<b>%{{x}}</b><br>{hover_key}<extra></extra>',
-            showlegend=show_legend and idx == 0,
+            showlegend=show_legend,
             width=width,
             text=[''] * len(x_labels),
         )
@@ -487,11 +549,15 @@ def render_deliveries_tab(db, contracts):
     today = datetime.now()
     col_year, col_month, _spacer = st.columns([1, 1, 2])
     with col_year:
-        year_options = list(range(today.year - 5, today.year + 3))
+        year_options = get_display_calendar_year_options(today.year)
         selected_year = st.selectbox(
             "Year",
             options=year_options,
-            index=year_options.index(today.year),
+            index=(
+                year_options.index(today.year)
+                if today.year in year_options
+                else len(year_options) - 1
+            ),
             key="deliveries_tab_year",
         )
     with col_month:
@@ -701,10 +767,11 @@ def main():
         
         # Crop year selector
         current_crop_year = get_current_crop_year()
+        crop_year_options = get_display_year_options(current_crop_year)
         selected_crop_year = st.selectbox(
             "Crop Year",
-            options=list(range(current_crop_year - 5, current_crop_year + 2)),
-            index=5,  # Default to current crop year
+            options=crop_year_options,
+            index=crop_year_options.index(current_crop_year) if current_crop_year in crop_year_options else len(crop_year_options) - 1,
             format_func=lambda x: f"{x} (Oct 1, {x} - Sep 30, {x+1})"
         )
         
@@ -1303,10 +1370,15 @@ def main():
         
         # Crop year selector (same as Crop Year Sales tab)
         current_crop_year = get_current_crop_year()
+        deliveries_crop_year_options = get_display_year_options(current_crop_year)
         selected_crop_year = st.selectbox(
             "Crop Year",
-            options=list(range(current_crop_year - 5, current_crop_year + 2)),
-            index=5,  # Default to current crop year
+            options=deliveries_crop_year_options,
+            index=(
+                deliveries_crop_year_options.index(current_crop_year)
+                if current_crop_year in deliveries_crop_year_options
+                else len(deliveries_crop_year_options) - 1
+            ),
             format_func=lambda x: f"{x} (Oct 1, {x} - Sep 30, {x+1})",
             key="deliveries_crop_year"
         )
@@ -1509,10 +1581,15 @@ def main():
         
         # Crop year selector (same as other tabs)
         current_crop_year = get_current_crop_year()
+        bins_crop_year_options = get_display_year_options(current_crop_year)
         selected_crop_year = st.selectbox(
             "Crop Year",
-            options=list(range(current_crop_year - 5, current_crop_year + 2)),
-            index=5,  # Default to current crop year
+            options=bins_crop_year_options,
+            index=(
+                bins_crop_year_options.index(current_crop_year)
+                if current_crop_year in bins_crop_year_options
+                else len(bins_crop_year_options) - 1
+            ),
             format_func=lambda x: f"{x} (Oct 1, {x} - Sep 30, {x+1})",
             key="bins_crop_year"
         )
@@ -1605,10 +1682,13 @@ def main():
                 bin_labels = []
                 settled_storage = []
                 contracted_storage = []
-                initial_storage = []
+                uncontracted_storage = []
+                empty_storage = []
+                empty_colors = []
                 current_storage = []
-                available_capacity = []
-                total_capacity = []
+                reference_heights = []
+                availability_labels = []
+                metrics_list = []
                 
                 for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
                     if view_mode == "View by Location":
@@ -1621,12 +1701,17 @@ def main():
                     bin_labels.append(bin_label)
                     
                     metrics = get_bin_storage_metrics(crop_storage, bin_name)
-                    settled_storage.append(metrics['settled'])
-                    contracted_storage.append(metrics['contracted'])
-                    initial_storage.append(metrics['initial'])
+                    metrics_list.append(metrics)
+                    settled_storage.append(metrics['chart_settled'])
+                    contracted_storage.append(metrics['chart_contracted'])
+                    uncontracted_storage.append(metrics['chart_uncontracted'])
+                    empty_storage.append(metrics['chart_empty'])
+                    empty_colors.append(
+                        BIN_SETTLED_COLOR if metrics.get('empty_uses_settled_color') else '#d5d8dc'
+                    )
                     current_storage.append(metrics['current'])
-                    available_capacity.append(metrics['available'])
-                    total_capacity.append(metrics['capacity'])
+                    reference_heights.append(metrics['reference'])
+                    availability_labels.append(metrics['availability_label'])
                 
                 # Calculate bins per row - aim for ~2 inches per bin (assuming ~12 inch wide screen)
                 # Approximately 4-5 bins per row to allow for ~2 inch width each
@@ -1691,56 +1776,37 @@ def main():
                     bin_colors = [current_color] * len(bin_labels)
                     bin_line_colors = [current_line_color] * len(bin_labels)
                 
-                # Percentage full + bushels/capacity labels (shown above each bar, not inside fill)
-                percentages_full = []
-                for i, bin_label in enumerate(bin_labels):
-                    capacity_val = total_capacity[i]
-                    current_val = current_storage[i]
-                    if capacity_val > 0:
-                        pct = (current_val / capacity_val) * 100
-                        percentages_full.append(f"{pct:.0f}% full")
-                    elif capacity_val == 0:
-                        percentages_full.append("Unlimited")  # Infinite capacity
-                    else:
-                        percentages_full.append("Empty")  # No capacity info
-
-                def _bar_label_annotation_text(i):
-                    cap = total_capacity[i]
-                    cur = current_storage[i]
-                    if cap > 0:
-                        cap_line = f"Current: {cur:,.0f} / {cap:,.0f} bu"
-                    else:
-                        cap_line = f"Current: {cur:,.0f} / Unlimited"
-                    return (
-                        f"Initial: {initial_storage[i]:,.0f} bu<br>"
-                        f"Contracted: {contracted_storage[i]:,.0f} bu<br>"
-                        f"Settled: {settled_storage[i]:,.0f} bu<br>"
-                        f"{cap_line}<br>{percentages_full[i]}"
-                    )
-
                 def _add_bar_top_annotations(
                     fig_bins, *, use_subplot_grid=False, row_num=1, col_num=1, label_slice=None
                 ):
                     indices = label_slice if label_slice is not None else range(len(bin_labels))
                     for i in indices:
-                        total_y = (
-                            settled_storage[i] + contracted_storage[i]
-                            + initial_storage[i] + available_capacity[i]
-                        )
-                        ann = dict(
+                        total_y = reference_heights[i]
+                        name_ann = dict(
                             x=bin_labels[i],
                             y=total_y,
-                            text=_bar_label_annotation_text(i),
+                            text=_short_bin_title(bin_labels[i]),
+                            showarrow=False,
+                            yanchor="bottom",
+                            yshift=78,
+                            xanchor="center",
+                            font=dict(size=15, color="black", family="Arial Black"),
+                        )
+                        metrics_ann = dict(
+                            x=bin_labels[i],
+                            y=total_y,
+                            text=_bin_metrics_label_text(metrics_list[i]),
                             showarrow=False,
                             yanchor="bottom",
                             yshift=12,
                             xanchor="center",
-                            font=dict(size=14, color="black", family="Arial Black"),
+                            font=dict(size=13, color="black", family="Arial Black"),
                         )
-                        if use_subplot_grid:
-                            fig_bins.add_annotation(row=row_num, col=col_num, **ann)
-                        else:
-                            fig_bins.add_annotation(**ann)
+                        for ann in (name_ann, metrics_ann):
+                            if use_subplot_grid:
+                                fig_bins.add_annotation(row=row_num, col=col_num, **ann)
+                            else:
+                                fig_bins.add_annotation(**ann)
                 
                 # Create subplots if multiple rows needed, otherwise single figure
                 if num_rows > 1:
@@ -1767,10 +1833,11 @@ def main():
                                 row_bin_labels,
                                 settled_storage[start_idx:end_idx],
                                 contracted_storage[start_idx:end_idx],
-                                initial_storage[start_idx:end_idx],
-                                available_capacity[start_idx:end_idx],
+                                uncontracted_storage[start_idx:end_idx],
+                                empty_storage[start_idx:end_idx],
                                 row_colors,
                                 row_line_colors,
+                                empty_colors[start_idx:end_idx],
                                 uniform_bar_width,
                                 show_legend=(row_idx == 0),
                                 subplot_row=row_idx + 1,
@@ -1790,7 +1857,7 @@ def main():
                         barmode='stack',
                         hovermode='x unified',
                         height=350 * num_rows,  # Adjust height based on number of rows
-                        margin=dict(t=80),
+                        margin=dict(t=130, b=20),
                         legend=dict(
                             traceorder='normal',
                             yanchor="top",
@@ -1808,9 +1875,11 @@ def main():
                         row_bin_labels = bin_labels[start_idx:end_idx] if start_idx < len(bin_labels) else []
                         
                         fig_bins.update_xaxes(
-                            title='',  # Remove "Bin Name" label
-                            tickangle=-45 if len(row_bin_labels) > 3 else 0,
-                            tickfont=dict(size=14, family='Arial Black', color='black'),  # Bold and larger
+                            title='',
+                            tickmode='array',
+                            tickvals=row_bin_labels,
+                            ticktext=[''] * len(row_bin_labels),
+                            showticklabels=False,
                             row=row_idx+1, col=1
                         )
                     
@@ -1834,10 +1903,11 @@ def main():
                         bin_labels,
                         settled_storage,
                         contracted_storage,
-                        initial_storage,
-                        available_capacity,
+                        uncontracted_storage,
+                        empty_storage,
                         bar_colors,
                         bar_line_colors,
+                        empty_colors,
                         uniform_bar_width,
                         show_legend=True,
                     )
@@ -1849,9 +1919,11 @@ def main():
                     fig_bins.update_layout(
                         title=f'{group} - Bin Storage Capacity',
                         xaxis=dict(
-                            title='',  # Remove "Bin Name" label
-                            tickangle=-45 if len(bin_labels) > 4 else 0,
-                            tickfont=dict(size=14, family='Arial Black', color='black')  # Bold and larger
+                            title='',
+                            tickmode='array',
+                            tickvals=bin_labels,
+                            ticktext=[''] * len(bin_labels),
+                            showticklabels=False,
                         ),
                         yaxis=dict(
                             title='Bushels',
@@ -1871,42 +1943,27 @@ def main():
                             x=1.01
                         ),
                         bargap=gap_size,  # Larger gap for fewer bins to prevent fat bars
-                        margin=dict(t=80),
+                        margin=dict(t=130, b=20),
                     )
                     _add_bar_top_annotations(fig_bins)
                 
                 st.plotly_chart(fig_bins, width='stretch')
+                _render_bin_availability_captions(availability_labels)
                 
                 # Summary table for this group
                 with st.expander(f"📊 View {group} Bin Details"):
                     summary_data = []
                     for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
-                        if crop_storage and hasattr(crop_storage, 'current_content'):
-                            current = crop_storage.current_content or 0
-                        else:
-                            current = 0
-                        capacity = bin_name.capacity or 0
-                        available = float(current) if capacity == 0 else max(0.0, float(capacity) - float(current))
-                        
-                        initial = 0
-                        settled = 0
-                        contracted = 0
-                        if crop_storage:
-                            if hasattr(crop_storage, 'initial_content'):
-                                initial = crop_storage.initial_content or 0
-                            if hasattr(crop_storage, 'settled_bushels'):
-                                settled = crop_storage.settled_bushels or 0
-                            if hasattr(crop_storage, 'contracted_bushels'):
-                                contracted = crop_storage.contracted_bushels or 0
+                        m = get_bin_storage_metrics(crop_storage, bin_name)
                         row_data = {
                             'Location': bin_name.location or 'N/A',
                             'Bin Name': bin_name.bin_name or 'N/A',
-                            'Initial (bu)': f"{initial:,.0f}",
-                            'Current (bu)': f"{current:,.0f}",
-                            'Settled (bu)': f"{settled:,.0f}",
-                            'Contracted (bu)': f"{contracted:,.0f}",
-                            'Available Capacity (bu)': f"{available:,.0f}",
-                            'Total Capacity (bu)': f"{capacity:,.0f}",
+                            'Initial (bu)': f"{m['initial']:,.0f}",
+                            'Current (bu)': f"{m['current']:,.0f}",
+                            'Settled (bu)': f"{m['settled']:,.0f}",
+                            'Contracted (bu)': f"{m.get('contracted_raw', m['contracted']):,.0f}",
+                            'Available to Market (bu)': f"{m['available_to_market']:,.0f}",
+                            'Total Capacity (bu)': f"{m['capacity']:,.0f}",
                             'Preferred Crop': bin_name.preferred_crop if hasattr(bin_name, 'preferred_crop') else 'N/A',
                             'Load Status': crop_storage.load_status if crop_storage and hasattr(crop_storage, 'load_status') else 'N/A'
                         }
@@ -1926,10 +1983,15 @@ def main():
         
         # Crop year selector
         current_crop_year = get_current_crop_year()
+        bins2_crop_year_options = get_display_year_options(current_crop_year)
         selected_crop_year = st.selectbox(
             "Crop Year",
-            options=list(range(current_crop_year - 5, current_crop_year + 2)),
-            index=5,
+            options=bins2_crop_year_options,
+            index=(
+                bins2_crop_year_options.index(current_crop_year)
+                if current_crop_year in bins2_crop_year_options
+                else len(bins2_crop_year_options) - 1
+            ),
             format_func=lambda x: f"{x} (Oct 1, {x} - Sep 30, {x+1})",
             key="bins2_crop_year"
         )
@@ -1983,32 +2045,36 @@ def main():
                 bin_labels = []
                 settled_storage_list = []
                 contracted_storage_list = []
-                initial_storage_list = []
+                uncontracted_storage_list = []
+                empty_storage_list = []
+                empty_color_list = []
                 current_storage_list = []
-                available_capacity_list = []
-                total_capacity_list = []
+                reference_heights_list = []
+                availability_labels_list = []
+                metrics_list_3d = []
                 
                 for bin_name, crop_storage in sorted(crop_bins, key=lambda b: (b[0].location, b[0].bin_name)):
                     bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
                     metrics = get_bin_storage_metrics(crop_storage, bin_name)
-                    settled_storage_list.append(metrics['settled'])
-                    contracted_storage_list.append(metrics['contracted'])
-                    initial_storage_list.append(metrics['initial'])
+                    metrics_list_3d.append(metrics)
+                    settled_storage_list.append(metrics['chart_settled'])
+                    contracted_storage_list.append(metrics['chart_contracted'])
+                    uncontracted_storage_list.append(metrics['chart_uncontracted'])
+                    empty_storage_list.append(metrics['chart_empty'])
+                    empty_color_list.append(
+                        BIN_SETTLED_COLOR if metrics.get('empty_uses_settled_color') else '#d5d8dc'
+                    )
                     current_storage_list.append(metrics['current'])
-                    available_capacity_list.append(metrics['available'])
-                    total_capacity_list.append(metrics['capacity'])
+                    reference_heights_list.append(metrics['reference'])
+                    availability_labels_list.append(metrics['availability_label'])
                 
                 # Build the 3D figure (one scene per bin when multiple — same view as single-bin)
                 radius = 1.0
                 num_bins = len(bin_labels)
                 
-                max_bushels = max(max(current_storage_list) if current_storage_list else [0],
-                                 max([c + a for c, a in zip(current_storage_list, available_capacity_list)]) if available_capacity_list else [0])
-                
-                scale_factor = 0.001
-                if max_bushels > 0:
-                    scale_factor = 20.0 / max_bushels  # Scale so max is about 20 units tall
+                max_reference = max(reference_heights_list) if reference_heights_list else 1.0
+                scale_factor = 20.0 / max_reference if max_reference > 0 else 0.001
                 
                 stored_color = crop_colors.get(crop, 'sienna')
                 
@@ -2029,17 +2095,9 @@ def main():
                 
                 settled_added = False
                 contracted_added = False
-                initial_added = False
-                available_added = False
+                uncontracted_added = False
+                empty_added = False
                 label_pad_top = 1.8
-                pct_caption_lines = []
-
-                def _pct_full_text(current_val, capacity_val):
-                    if capacity_val > 0:
-                        return f"{(current_val / capacity_val) * 100:.0f}% full"
-                    if capacity_val == 0:
-                        return "Unlimited" if current_val > 0 else "Empty"
-                    return "Empty"
 
                 def _add_trace(trace):
                     if num_bins <= 1:
@@ -2047,24 +2105,15 @@ def main():
                     else:
                         fig.add_trace(trace, row=1, col=subplot_col)
 
-                def _top_label_text(initial_val, contracted_val, settled_val, current_val, capacity_val):
-                    lines = [
-                        f"Initial: {initial_val:,.0f} bu",
-                        f"Contracted: {contracted_val:,.0f} bu",
-                        f"Settled: {settled_val:,.0f} bu",
-                    ]
-                    if capacity_val > 0:
-                        lines.append(f"Current: {current_val:,.0f} / {capacity_val:,.0f} bu")
-                    else:
-                        lines.append(f"Current: {current_val:,.0f} / Unlimited bu")
-                    return "<br>".join(lines)
+                def _top_label_text(metrics):
+                    return _bin_metrics_label_text(metrics)
 
-                def _add_bin_top_label(stack_height, initial_val, contracted_val, settled_val, current_val, capacity_val):
+                def _add_bin_top_label(stack_height, metrics):
                     z_top = stack_height + label_pad_top
                     _add_trace(go.Scatter3d(
                         x=[0], y=[0], z=[z_top],
                         mode="text",
-                        text=[_top_label_text(initial_val, contracted_val, settled_val, current_val, capacity_val)],
+                        text=[_top_label_text(metrics)],
                         textfont=dict(size=18, color="#000000", family="Arial Black"),
                         showlegend=False,
                         hoverinfo="skip",
@@ -2097,12 +2146,12 @@ def main():
 
                 for idx, bin_label in enumerate(bin_labels):
                     subplot_col = idx + 1
+                    metrics = metrics_list_3d[idx]
                     settled_val = settled_storage_list[idx]
                     contracted_val = contracted_storage_list[idx]
-                    initial_val = initial_storage_list[idx]
-                    current_val = current_storage_list[idx]
-                    available_val = available_capacity_list[idx]
-                    capacity_val = total_capacity_list[idx]
+                    uncontracted_val = uncontracted_storage_list[idx]
+                    empty_val = empty_storage_list[idx]
+                    empty_color = empty_color_list[idx]
                     
                     z_base = 0.0
                     if settled_val > 0:
@@ -2115,28 +2164,19 @@ def main():
                             contracted_val * scale_factor, z_base, BIN_CONTRACTED_COLOR, 'Contracted', not contracted_added
                         )
                         contracted_added = True
-                    if initial_val > 0:
+                    if uncontracted_val > 0:
                         z_base = _add_cylinder_segment(
-                            initial_val * scale_factor, z_base, stored_color, 'Initial', not initial_added
+                            uncontracted_val * scale_factor, z_base, stored_color, 'Uncontracted', not uncontracted_added
                         )
-                        initial_added = True
-                    
-                    avail_height = (
-                        available_val * scale_factor
-                        if capacity_val > 0 and available_val > 0
-                        else 0.0
-                    )
-                    if avail_height > 0:
+                        uncontracted_added = True
+                    if empty_val > 0:
                         z_base = _add_cylinder_segment(
-                            avail_height, z_base, 'lightgray', 'Available Capacity', not available_added
+                            empty_val * scale_factor, z_base, empty_color, 'Empty', not empty_added
                         )
-                        available_added = True
+                        empty_added = True
                     
-                    stack_height = max(z_base, 0.5)
-                    _add_bin_top_label(
-                        stack_height, initial_val, contracted_val, settled_val, current_val, capacity_val
-                    )
-                    pct_caption_lines.append(_pct_full_text(current_val, capacity_val))
+                    stack_height = max(reference_heights_list[idx] * scale_factor, 0.5)
+                    _add_bin_top_label(stack_height, metrics)
                 
                 legend_cfg = dict(yanchor="top", y=0.99, xanchor="left", x=1.01)
                 layout_margin = dict(l=10, r=10, t=45, b=0)
@@ -2158,10 +2198,7 @@ def main():
                     fig.layout.scene.camera.projection.type = "orthographic"
                 else:
                     max_stack_z = max(
-                        (
-                            settled_storage_list[i] + contracted_storage_list[i]
-                            + initial_storage_list[i] + available_capacity_list[i]
-                        ) * scale_factor
+                        reference_heights_list[i] * scale_factor
                         for i in range(num_bins)
                     ) if num_bins else 20.0
                     max_stack_z = max(max_stack_z, radius * 2) * 1.05 + label_pad_top
@@ -2187,25 +2224,7 @@ def main():
                     width='stretch',
                     config={'scrollZoom': False},
                 )
-                caption_style = (
-                    "text-align:center;font-size:1.35rem;font-weight:700;"
-                    "font-family:Arial Black,sans-serif;margin:0;padding:0;line-height:1.2;"
-                )
-                caption_wrap = "margin-top:-1.25rem;margin-bottom:0.25rem;"
-                if num_bins <= 1:
-                    st.markdown(
-                        f"<div style='{caption_wrap}'><p style='{caption_style}'>"
-                        f"{pct_caption_lines[0]}</p></div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    cap_cols = st.columns(num_bins)
-                    for cap_col, pct_text in zip(cap_cols, pct_caption_lines):
-                        cap_col.markdown(
-                            f"<div style='{caption_wrap}'><p style='{caption_style}'>"
-                            f"{pct_text}</p></div>",
-                            unsafe_allow_html=True,
-                        )
+                _render_bin_availability_captions(availability_labels_list)
                 st.markdown("---")
     
     with tab5:
@@ -2217,34 +2236,20 @@ def main():
         if not all_contracts:
             st.info("No contracts found in the database.")
         else:
-            # Determine available filter options
-            # 1. Crop years (from delivery_start dates)
-            crop_years = set()
-            for contract in all_contracts:
-                if contract.delivery_start:
-                    try:
-                        crop_year = get_crop_year_from_date(contract.delivery_start)
-                        if crop_year:
-                            crop_years.add(crop_year)
-                    except Exception:
-                        pass
-            crop_years = sorted(list(crop_years), reverse=True)
+            year_basis = st.radio(
+                "Contract year basis",
+                options=["Crop Year", "Calendar Year"],
+                horizontal=True,
+                key="contract_year_basis",
+                help=(
+                    "Crop Year uses Oct 1 – Sep 30 (e.g. 2026 = Oct 2026 through Sep 2027). "
+                    "Calendar Year uses Jan 1 – Dec 31. Choose one basis — not both."
+                ),
+            )
+            crop_years = discover_contract_crop_years(all_contracts)
+            calendar_years = discover_contract_calendar_years(all_contracts)
             
-            # 2. Delivery months (from delivery_start dates)
-            delivery_months = set()
-            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-            for contract in all_contracts:
-                if contract.delivery_start:
-                    try:
-                        # Format as "Oct 2025"
-                        month_key = f"{month_names[contract.delivery_start.month - 1]} {contract.delivery_start.year}"
-                        delivery_months.add(month_key)
-                    except Exception:
-                        pass
-            # Sort by year, then by month
-            delivery_months = sorted(list(delivery_months), key=lambda x: (int(x.split()[1]), month_names.index(x.split()[0])))
-            
-            # 3. Crop types (normalized names)
+            # Crop types (normalized names)
             crop_types = set()
             for contract in all_contracts:
                 if contract.commodity:
@@ -2263,18 +2268,47 @@ def main():
             filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
             
             with filter_col1:
-                st.markdown("**Crop Year**")
-                selected_crop_years = []
-                for cy in crop_years:
-                    if st.checkbox(f"{cy}", key=f"contract_crop_year_{cy}", value=True):
-                        selected_crop_years.append(cy)
+                if year_basis == "Crop Year":
+                    st.markdown("**Crop Year**")
+                    selected_year_filter = []
+                    for cy in crop_years:
+                        if st.checkbox(
+                            f"{cy}",
+                            key=f"contract_crop_year_{cy}",
+                            value=True,
+                        ):
+                            selected_year_filter.append(cy)
+                else:
+                    st.markdown("**Calendar Year**")
+                    selected_year_filter = []
+                    for cal_y in calendar_years:
+                        if st.checkbox(
+                            f"{cal_y}",
+                            key=f"contract_calendar_year_{cal_y}",
+                            value=True,
+                        ):
+                            selected_year_filter.append(cal_y)
             
+            delivery_months = delivery_months_for_year_selection(
+                all_contracts, year_basis, selected_year_filter
+            )
             with filter_col2:
                 st.markdown("**Delivery Month**")
-                selected_delivery_months = []
-                for dm in delivery_months:
-                    if st.checkbox(f"{dm}", key=f"contract_delivery_month_{dm}", value=True):
-                        selected_delivery_months.append(dm)
+                if not selected_year_filter:
+                    st.caption("Select at least one year to see delivery months.")
+                    selected_delivery_months = []
+                elif not delivery_months:
+                    st.caption("No delivery months for the selected year(s).")
+                    selected_delivery_months = []
+                else:
+                    selected_delivery_months = []
+                    for dm in delivery_months:
+                        if st.checkbox(
+                            f"{dm}",
+                            key=f"contract_delivery_month_{year_basis}_{dm}",
+                            value=True,
+                        ):
+                            selected_delivery_months.append(dm)
             
             with filter_col3:
                 st.markdown("**Crop Type**")
@@ -2300,28 +2334,16 @@ def main():
             # Filter contracts based on selections
             filtered_contracts = []
             for contract in all_contracts:
-                # Filter by crop year
-                contract_crop_year = None
-                if contract.delivery_start:
-                    try:
-                        contract_crop_year = get_crop_year_from_date(contract.delivery_start)
-                    except Exception:
-                        pass
-                if selected_crop_years and contract_crop_year not in selected_crop_years:
+                if not contract_matches_year_basis(
+                    contract.delivery_start, year_basis, selected_year_filter
+                ):
                     continue
                 
-                # Filter by delivery month
                 if contract.delivery_start:
-                    try:
-                        contract_month_key = f"{month_names[contract.delivery_start.month - 1]} {contract.delivery_start.year}"
-                        if selected_delivery_months and contract_month_key not in selected_delivery_months:
-                            continue
-                    except Exception:
-                        # If we can't parse the month, skip if delivery months are selected
-                        if selected_delivery_months:
-                            continue
+                    contract_month_key = format_delivery_month_key(contract.delivery_start)
+                    if selected_delivery_months and contract_month_key not in selected_delivery_months:
+                        continue
                 elif selected_delivery_months:
-                    # No delivery_start date but delivery months are selected, skip
                     continue
                 
                 # Filter by crop type

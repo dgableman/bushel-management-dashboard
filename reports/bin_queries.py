@@ -140,22 +140,83 @@ def get_bins_with_storage_by_location(db: Session, crop_year: int, include_empty
 
 def get_bin_storage_metrics(crop_storage, bin_name) -> dict:
     """
-    Bushel metrics for bin charts: initial, contracted, settled, and capacity fill.
-    Available space is based on physical current_content vs capacity.
+    Bushel metrics for bin charts using non-overlapping segments.
+
+    Reference height: bin capacity (finite) or initial fill (unlimited).
+    Stack (bottom to top): settled, contracted, uncontracted in-bin, empty space.
     """
-    current = initial = settled = contracted = 0
-    if crop_storage is not None:
-        current = int(getattr(crop_storage, 'current_content', 0) or 0)
-        initial = int(getattr(crop_storage, 'initial_content', 0) or 0)
-        settled = int(getattr(crop_storage, 'settled_bushels', 0) or 0)
-        contracted = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
     capacity = int(bin_name.capacity or 0) if bin_name else 0
-    available = 0.0 if capacity == 0 else max(0.0, float(capacity) - float(current))
+    is_unlimited = capacity == 0
+
+    if crop_storage is None:
+        reference = float(capacity) if capacity > 0 else 1.0
+        return {
+            'current': 0.0,
+            'initial': 0.0,
+            'settled': 0.0,
+            'contracted': 0.0,
+            'contracted_raw': 0.0,
+            'capacity': float(capacity),
+            'is_unlimited': is_unlimited,
+            'reference': reference,
+            'chart_settled': 0.0,
+            'chart_contracted': 0.0,
+            'chart_uncontracted': 0.0,
+            'chart_empty': reference,
+            'empty_uses_settled_color': True,
+            'available_to_market': 0.0,
+            'available_pct': 0.0,
+            'over_contracted': 0.0,
+            'is_empty_bin': True,
+            'availability_label': 'Empty bin',
+        }
+
+    current = int(getattr(crop_storage, 'current_content', 0) or 0)
+    initial = int(getattr(crop_storage, 'initial_content', 0) or 0)
+    settled = int(getattr(crop_storage, 'settled_bushels', 0) or 0)
+    contracted = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
+
+    if is_unlimited:
+        reference = float(max(initial, settled + current, 1))
+    else:
+        reference = float(capacity)
+
+    contracted_chart = float(min(contracted, max(current, 0)))
+    over_contracted = float(max(0, contracted - current))
+    uncontracted = float(max(0, current - contracted_chart))
+    chart_settled = float(settled)
+    chart_empty = float(max(0.0, reference - settled - current))
+
+    available_to_market = uncontracted
+    available_pct = (available_to_market / reference * 100.0) if reference > 0 else 0.0
+
+    if current == 0 and settled > 0 and chart_empty <= 0:
+        availability_label = 'Empty — all settled'
+    elif over_contracted > 0:
+        availability_label = (
+            f'Available: {available_to_market:,.0f} bu ({available_pct:.0f}%)\n'
+            f'Over-contracted: {over_contracted:,.0f} bu'
+        )
+    else:
+        availability_label = f'Available: {available_to_market:,.0f} bu ({available_pct:.0f}%)'
+
     return {
         'current': float(current),
         'initial': float(initial),
         'settled': float(settled),
-        'contracted': float(contracted),
-        'available': available,
+        'contracted': contracted_chart,
+        'contracted_raw': float(contracted),
         'capacity': float(capacity),
+        'is_unlimited': is_unlimited,
+        'reference': reference,
+        'chart_settled': chart_settled,
+        'chart_contracted': contracted_chart,
+        'chart_uncontracted': uncontracted,
+        'chart_empty': chart_empty,
+        'empty_uses_settled_color': False,
+        'available_to_market': available_to_market,
+        'available_pct': available_pct,
+        'over_contracted': over_contracted,
+        'is_empty_bin': False,
+        'availability_label': availability_label,
     }
