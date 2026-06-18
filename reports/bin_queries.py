@@ -5,7 +5,12 @@ Includes functions for grouping bins by crop or location.
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from typing import List, Optional, Dict, Tuple
-from database.models import BinName, CropStorage
+from database.models import BinName, CropStorage, Contract, Settlement
+from reports.commodity_utils import normalize_commodity_name
+from reports.crop_year_utils import (
+    calculate_partial_contract_remaining,
+    is_date_in_crop_year,
+)
 
 
 def get_all_bin_names(db: Session) -> List[BinName]:
@@ -138,12 +143,85 @@ def get_bins_with_storage_by_location(db: Session, crop_year: int, include_empty
         return {}
 
 
-def get_bin_storage_metrics(crop_storage, bin_name) -> dict:
+def get_open_contract_bushels_by_crop(db: Session, crop_year: int) -> Dict[str, int]:
+    """Remaining bushels on active open and partial contracts for the crop year, by crop."""
+    all_contracts = db.query(Contract).all()
+    all_settlements = db.query(Settlement).all()
+    totals: Dict[str, int] = {}
+
+    for contract in all_contracts:
+        contract_status = (contract.status or "").strip()
+        if contract_status.lower() != "active":
+            continue
+        if not contract.delivery_start or not is_date_in_crop_year(
+            contract.delivery_start, crop_year
+        ):
+            continue
+        if not contract.commodity:
+            continue
+        crop = normalize_commodity_name(db, contract.commodity)
+        if not crop:
+            continue
+
+        fill_status = contract.fill_status or "None"
+        if fill_status not in ("None", "Partial"):
+            continue
+
+        if fill_status == "None":
+            remaining = contract.bushels or 0
+        else:
+            _, remaining = calculate_partial_contract_remaining(contract, all_settlements)
+
+        if remaining > 0:
+            totals[crop] = totals.get(crop, 0) + int(remaining)
+
+    return totals
+
+
+def build_open_contract_allocation_by_bin(
+    db: Session,
+    crop_year: int,
+    storage_entries: Optional[List[CropStorage]] = None,
+) -> Dict[Tuple[str, str, str], int]:
+    """
+    Allocate crop-level open/partial contract bushels to bins by contracted_bushels share.
+    Key: (location, bin_name, crop).
+    """
+    if storage_entries is None:
+        storage_entries = get_crop_storage_for_year(db, crop_year)
+
+    open_by_crop = get_open_contract_bushels_by_crop(db, crop_year)
+    assigned_by_crop: Dict[str, int] = {}
+    for entry in storage_entries:
+        crop = entry.crop or "Unknown"
+        assigned_by_crop[crop] = assigned_by_crop.get(crop, 0) + int(
+            getattr(entry, "contracted_bushels", 0) or 0
+        )
+
+    allocation: Dict[Tuple[str, str, str], int] = {}
+    for entry in storage_entries:
+        crop = entry.crop or "Unknown"
+        key = (entry.location or "", entry.bin_name or "", crop)
+        open_total = open_by_crop.get(crop, 0)
+        assigned_total = assigned_by_crop.get(crop, 0)
+        contracted = int(getattr(entry, "contracted_bushels", 0) or 0)
+        if assigned_total > 0 and contracted > 0:
+            allocation[key] = int(round(open_total * contracted / assigned_total))
+        else:
+            allocation[key] = 0
+    return allocation
+
+
+def get_bin_storage_metrics(
+    crop_storage,
+    bin_name,
+    open_contract_bushels: float = 0,
+) -> dict:
     """
     Bushel metrics for bin charts using non-overlapping segments.
 
     Reference height: bin capacity (finite) or initial fill (unlimited).
-    Stack (bottom to top): settled, contracted, uncontracted in-bin, empty space.
+    Stack (bottom to top): settled, open contracts, not sold in-bin, empty space.
     """
     capacity = int(bin_name.capacity or 0) if bin_name else 0
     is_unlimited = capacity == 0
@@ -156,14 +234,18 @@ def get_bin_storage_metrics(crop_storage, bin_name) -> dict:
             'settled': 0.0,
             'contracted': 0.0,
             'contracted_raw': 0.0,
+            'open_contracts': 0.0,
+            'not_sold': 0.0,
             'capacity': float(capacity),
             'is_unlimited': is_unlimited,
             'reference': reference,
             'chart_settled': 0.0,
             'chart_contracted': 0.0,
+            'chart_not_sold': 0.0,
             'chart_uncontracted': 0.0,
             'chart_empty': reference,
             'empty_uses_settled_color': True,
+            'not_sold_market': 0.0,
             'available_to_market': 0.0,
             'available_pct': 0.0,
             'over_contracted': 0.0,
@@ -174,48 +256,53 @@ def get_bin_storage_metrics(crop_storage, bin_name) -> dict:
     current = int(getattr(crop_storage, 'current_content', 0) or 0)
     initial = int(getattr(crop_storage, 'initial_content', 0) or 0)
     settled = int(getattr(crop_storage, 'settled_bushels', 0) or 0)
-    contracted = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
+    bin_contracted_assigned = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
+    open_contracts = float(max(0, open_contract_bushels))
 
     if is_unlimited:
         reference = float(max(initial, settled + current, 1))
     else:
         reference = float(capacity)
 
-    contracted_chart = float(min(contracted, max(current, 0)))
-    over_contracted = float(max(0, contracted - current))
-    uncontracted = float(max(0, current - contracted_chart))
+    contracted_chart = float(min(open_contracts, max(current, 0)))
+    over_contracted = float(max(0, open_contracts - current))
+    not_sold = float(max(0, initial - settled - open_contracts))
+    chart_not_sold = float(max(0, current - contracted_chart))
     chart_settled = float(settled)
     chart_empty = float(max(0.0, reference - settled - current))
 
-    available_to_market = uncontracted
-    available_pct = (available_to_market / reference * 100.0) if reference > 0 else 0.0
+    not_sold_pct = (not_sold / reference * 100.0) if reference > 0 else 0.0
 
     if current == 0 and settled > 0 and chart_empty <= 0:
         availability_label = 'Empty — all settled'
     elif over_contracted > 0:
         availability_label = (
-            f'Available: {available_to_market:,.0f} bu ({available_pct:.0f}%)\n'
+            f'Not sold: {not_sold:,.0f} bu ({not_sold_pct:.0f}%)\n'
             f'Over-contracted: {over_contracted:,.0f} bu'
         )
     else:
-        availability_label = f'Available: {available_to_market:,.0f} bu ({available_pct:.0f}%)'
+        availability_label = f'Not sold: {not_sold:,.0f} bu ({not_sold_pct:.0f}%)'
 
     return {
         'current': float(current),
         'initial': float(initial),
         'settled': float(settled),
         'contracted': contracted_chart,
-        'contracted_raw': float(contracted),
+        'contracted_raw': float(bin_contracted_assigned),
+        'open_contracts': open_contracts,
+        'not_sold': not_sold,
         'capacity': float(capacity),
         'is_unlimited': is_unlimited,
         'reference': reference,
         'chart_settled': chart_settled,
         'chart_contracted': contracted_chart,
-        'chart_uncontracted': uncontracted,
+        'chart_not_sold': chart_not_sold,
+        'chart_uncontracted': chart_not_sold,
         'chart_empty': chart_empty,
         'empty_uses_settled_color': False,
-        'available_to_market': available_to_market,
-        'available_pct': available_pct,
+        'not_sold_market': not_sold,
+        'available_to_market': not_sold,
+        'available_pct': not_sold_pct,
         'over_contracted': over_contracted,
         'is_empty_bin': False,
         'availability_label': availability_label,

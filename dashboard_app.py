@@ -85,7 +85,11 @@ if PROJECT_PATH not in sys.path:
 from database.db_connection import create_db_session
 from reports.contract_queries import get_all_contracts, get_active_contracts
 from reports.settlement_queries import get_all_settlements
-from reports.bin_queries import get_bins_with_storage_by_crop, get_bin_storage_metrics
+from reports.bin_queries import (
+    get_bins_with_storage_by_crop,
+    get_bin_storage_metrics,
+    build_open_contract_allocation_by_bin,
+)
 from reports.commodity_utils import (
     normalize_commodity_name,
     get_commodities_for_normalized_name,
@@ -330,7 +334,8 @@ def get_drilldown_details(
     return details
 
 
-BIN_SETTLED_COLOR = '#95a5a6'
+BIN_SETTLED_COLOR = '#2ecc71'
+BIN_SETTLED_LINE_COLOR = '#1e8449'
 BIN_CONTRACTED_COLOR = '#9b59b6'
 BIN_CAPTION_STYLE = (
     "text-align:center;font-size:1.35rem;font-weight:700;"
@@ -352,11 +357,13 @@ def _bin_metrics_label_text(metrics: dict) -> str:
         cap_line = f"Current: {metrics['current']:,.0f} / {metrics['capacity']:,.0f} bu"
     else:
         cap_line = f"Current: {metrics['current']:,.0f} bu"
-    contracted_raw = metrics.get('contracted_raw', metrics['contracted'])
+    contracted_raw = metrics.get('open_contracts', metrics.get('contracted_raw', metrics['contracted']))
+    not_sold = metrics.get('not_sold', metrics.get('available_to_market', 0))
     return (
         f"Initial: {metrics['initial']:,.0f} bu<br>"
-        f"Contracted: {contracted_raw:,.0f} bu<br>"
+        f"Open Contracts: {contracted_raw:,.0f} bu<br>"
         f"Settled: {metrics['settled']:,.0f} bu<br>"
+        f"Not Sold: {not_sold:,.0f} bu<br>"
         f"{cap_line}"
     )
 
@@ -400,12 +407,12 @@ def add_bins_stacked_bar_traces(
     subplot_row=None,
     subplot_col=None,
 ):
-    """Stacked bar segments: Settled, Contracted, Uncontracted in-bin, then Empty."""
+    """Stacked bar segments: Settled, Open Contracts, Not sold in-bin, then Empty."""
     width = [bar_width] * len(x_labels)
     traces = [
-        ('Settled', settled, BIN_SETTLED_COLOR, '#7f8c8d', 'Settled: %{y:,.0f} bu'),
-        ('Contracted', contracted, BIN_CONTRACTED_COLOR, '#7d3c98', 'Contracted: %{y:,.0f} bu'),
-        ('Uncontracted', uncontracted, crop_colors, crop_line_colors, 'Uncontracted: %{y:,.0f} bu'),
+        ('Settled', settled, BIN_SETTLED_COLOR, BIN_SETTLED_LINE_COLOR, 'Settled: %{y:,.0f} bu'),
+        ('Open Contracts', contracted, BIN_CONTRACTED_COLOR, '#7d3c98', 'Open contracts: %{y:,.0f} bu'),
+        ('Not sold', uncontracted, crop_colors, crop_line_colors, 'Not sold: %{y:,.0f} bu'),
         ('Empty', empty_space, empty_colors, empty_colors, 'Empty: %{y:,.0f} bu'),
     ]
     for idx, (name, y, color, line_color, hover_key) in enumerate(traces):
@@ -956,12 +963,12 @@ def main():
                     lambda row: f"{int(round(row['Pct_Open']))}%" if row['Pct_Open'] >= 1.0 else "", axis=1
                 )
                 
-                # Create stacked horizontal bar chart - add in correct order: Sold, Contracted, Open
+                # Create stacked horizontal bar chart - add in correct order: Settled, Contracted, Open
                 fig_revenue = go.Figure()
                 
-                # Add Sold first (leftmost in bar, first in legend)
+                # Add Settled first (leftmost in bar, first in legend)
                 fig_revenue.add_trace(go.Bar(
-                    name='Sold',
+                    name='Settled',
                     y=df_revenue.index,
                     x=df_revenue['Sold'],
                     orientation='h',
@@ -971,7 +978,7 @@ def main():
                     textposition='inside',
                     insidetextanchor='middle',
                     insidetextfont=dict(color='black', size=18, family='Arial Black'),
-                    hovertemplate='Sold: $%{x:,.0f}<br>Bushels: %{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
+                    hovertemplate='Settled: $%{x:,.0f}<br>Bushels: %{customdata[0]:,.0f}<br>Avg Price: $%{customdata[1]:.2f}/bu<br>━━━━━━━━━━━━━━━━<extra></extra>',
                     legendrank=1,
                     showlegend=True
                 ))
@@ -1673,6 +1680,8 @@ def main():
                 st.code(traceback.format_exc())
             bins_by_group = {}
             group_label = "Crop"
+
+        open_contract_allocation = build_open_contract_allocation_by_bin(db, selected_crop_year)
         
         # Debug: Show what groups were found
         if st.checkbox("🔍 Debug: Show bin data", key="debug_bins"):
@@ -1744,14 +1753,25 @@ def main():
                         bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
                     
-                    metrics = get_bin_storage_metrics(crop_storage, bin_name)
+                    metrics = get_bin_storage_metrics(
+                        crop_storage,
+                        bin_name,
+                        open_contract_bushels=open_contract_allocation.get(
+                            (
+                                (crop_storage.location or "") if crop_storage else "",
+                                (crop_storage.bin_name or "") if crop_storage else "",
+                                (crop_storage.crop or "") if crop_storage else "",
+                            ),
+                            0,
+                        ),
+                    )
                     metrics_list.append(metrics)
                     settled_storage.append(metrics['chart_settled'])
                     contracted_storage.append(metrics['chart_contracted'])
-                    uncontracted_storage.append(metrics['chart_uncontracted'])
+                    uncontracted_storage.append(metrics['chart_not_sold'])
                     empty_storage.append(metrics['chart_empty'])
                     empty_colors.append(
-                        BIN_SETTLED_COLOR if metrics.get('empty_uses_settled_color') else '#d5d8dc'
+                        '#d5d8dc'
                     )
                     current_storage.append(metrics['current'])
                     reference_heights.append(metrics['reference'])
@@ -1998,15 +2018,26 @@ def main():
                 with st.expander(f"📊 View {group} Bin Details"):
                     summary_data = []
                     for bin_name, crop_storage in sorted(group_bins, key=lambda b: (b[0].location, b[0].bin_name)):
-                        m = get_bin_storage_metrics(crop_storage, bin_name)
+                        m = get_bin_storage_metrics(
+                            crop_storage,
+                            bin_name,
+                            open_contract_bushels=open_contract_allocation.get(
+                                (
+                                    (crop_storage.location or "") if crop_storage else "",
+                                    (crop_storage.bin_name or "") if crop_storage else "",
+                                    (crop_storage.crop or "") if crop_storage else "",
+                                ),
+                                0,
+                            ),
+                        )
                         row_data = {
                             'Location': bin_name.location or 'N/A',
                             'Bin Name': bin_name.bin_name or 'N/A',
                             'Initial (bu)': f"{m['initial']:,.0f}",
                             'Current (bu)': f"{m['current']:,.0f}",
                             'Settled (bu)': f"{m['settled']:,.0f}",
-                            'Contracted (bu)': f"{m.get('contracted_raw', m['contracted']):,.0f}",
-                            'Available to Market (bu)': f"{m['available_to_market']:,.0f}",
+                            'Open Contracts (bu)': f"{m.get('open_contracts', m['contracted']):,.0f}",
+                            'Not Sold (bu)': f"{m.get('not_sold', m['available_to_market']):,.0f}",
                             'Total Capacity (bu)': f"{m['capacity']:,.0f}",
                             'Preferred Crop': bin_name.preferred_crop if hasattr(bin_name, 'preferred_crop') else 'N/A',
                             'Load Status': crop_storage.load_status if crop_storage and hasattr(crop_storage, 'load_status') else 'N/A'
@@ -2042,6 +2073,7 @@ def main():
         
         # Get bins grouped by crop
         bins_by_crop = get_bins_with_storage_by_crop(db, selected_crop_year)
+        open_contract_allocation_3d = build_open_contract_allocation_by_bin(db, selected_crop_year)
         
         if not bins_by_crop:
             st.info("No bins with storage found for the selected crop year.")
@@ -2100,14 +2132,25 @@ def main():
                 for bin_name, crop_storage in sorted(crop_bins, key=lambda b: (b[0].location, b[0].bin_name)):
                     bin_label = f"{bin_name.location} - {bin_name.bin_name}"
                     bin_labels.append(bin_label)
-                    metrics = get_bin_storage_metrics(crop_storage, bin_name)
+                    metrics = get_bin_storage_metrics(
+                        crop_storage,
+                        bin_name,
+                        open_contract_bushels=open_contract_allocation_3d.get(
+                            (
+                                (crop_storage.location or "") if crop_storage else "",
+                                (crop_storage.bin_name or "") if crop_storage else "",
+                                (crop_storage.crop or "") if crop_storage else "",
+                            ),
+                            0,
+                        ),
+                    )
                     metrics_list_3d.append(metrics)
                     settled_storage_list.append(metrics['chart_settled'])
                     contracted_storage_list.append(metrics['chart_contracted'])
-                    uncontracted_storage_list.append(metrics['chart_uncontracted'])
+                    uncontracted_storage_list.append(metrics['chart_not_sold'])
                     empty_storage_list.append(metrics['chart_empty'])
                     empty_color_list.append(
-                        BIN_SETTLED_COLOR if metrics.get('empty_uses_settled_color') else '#d5d8dc'
+                        '#d5d8dc'
                     )
                     current_storage_list.append(metrics['current'])
                     reference_heights_list.append(metrics['reference'])
@@ -2205,12 +2248,12 @@ def main():
                         settled_added = True
                     if contracted_val > 0:
                         z_base = _add_cylinder_segment(
-                            contracted_val * scale_factor, z_base, BIN_CONTRACTED_COLOR, 'Contracted', not contracted_added
+                            contracted_val * scale_factor, z_base, BIN_CONTRACTED_COLOR, 'Open Contracts', not contracted_added
                         )
                         contracted_added = True
                     if uncontracted_val > 0:
                         z_base = _add_cylinder_segment(
-                            uncontracted_val * scale_factor, z_base, stored_color, 'Uncontracted', not uncontracted_added
+                            uncontracted_val * scale_factor, z_base, stored_color, 'Not sold', not uncontracted_added
                         )
                         uncontracted_added = True
                     if empty_val > 0:
