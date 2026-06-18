@@ -448,22 +448,32 @@ def add_bins_stacked_bar_traces(
             fig.add_trace(trace)
 
 
-@st.cache_resource
-def get_database_session():
-    """Create and cache a database session using the configured DB_PATH."""
+def _resolve_db_path():
+    """Resolve the active DB path, honoring a Streamlit secret/env override."""
+    db_path = DB_PATH
     try:
-        db_path = DB_PATH
+        if hasattr(st, 'secrets') and st.secrets.get("DB_PATH"):
+            db_path = st.secrets.get("DB_PATH")
+    except (AttributeError, FileNotFoundError, KeyError):
+        pass
+    return db_path
 
-        # Allow a Streamlit secret or env override (used for cloud deployments)
-        try:
-            if hasattr(st, 'secrets') and st.secrets.get("DB_PATH"):
-                db_path = st.secrets.get("DB_PATH")
-        except (AttributeError, FileNotFoundError, KeyError):
-            pass
 
+def _db_file_signature(db_path):
+    """Size+mtime fingerprint so the cached session refreshes when the DB changes."""
+    try:
+        stat = os.stat(db_path)
+        return f"{stat.st_size}-{int(stat.st_mtime)}"
+    except OSError:
+        return "missing"
+
+
+@st.cache_resource
+def _get_database_session_cached(db_path, _signature):
+    """Cached DB session keyed by path + file signature (see get_database_session)."""
+    try:
         if not Path(db_path).exists():
             raise FileNotFoundError(f"Database file not found: {db_path}")
-
         return create_db_session(db_path)
     except FileNotFoundError as e:
         st.error(f"❌ {e}")
@@ -474,6 +484,18 @@ def get_database_session():
         with st.expander("🔍 Full error details"):
             st.code(traceback.format_exc())
         return None
+
+
+def get_database_session():
+    """Create and cache a database session using the configured DB_PATH.
+
+    The cache key includes the database file's size/mtime, so when the
+    underlying file is replaced (e.g. a new DB is deployed) a fresh session is
+    created automatically instead of serving stale data.
+    """
+    db_path = _resolve_db_path()
+    signature = _db_file_signature(db_path)
+    return _get_database_session_cached(db_path, signature)
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_market_prices():
@@ -1667,7 +1689,7 @@ def main():
         with col2:
             include_empty_bins = st.checkbox(
                 "Include empty bins",
-                value=False,
+                value=True,
                 key="bins_include_empty",
                 help="If checked, shows all bins regardless of storage. If unchecked, only shows bins with storage for the selected crop year."
             )
