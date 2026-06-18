@@ -533,14 +533,33 @@ def render_contract_pdf_picker(contract_numbers, key_prefix, label="\U0001F4C4 V
             st.warning(f"No PDF found in storage for contract {selected}.")
 
 
-def render_deliveries_tab(db, contracts):
+_DELIVERIES_FILL_STATUSES = ("None", "Partial", "Filled", "Over")
+_DELIVERIES_STATUS_SORT = {"Partial": 0, "Open": 1, "Filled": 2, "Over": 3}
+
+
+def _deliveries_fill_status_label(fill_status: str) -> str:
+    return "Open" if fill_status == "None" else fill_status
+
+
+def _contract_delivered_bushels(contract, settlements) -> int:
+    contract_number = contract.contract_number
+    return sum(
+        s.bushels or 0
+        for s in settlements
+        if s.contract_id == contract_number
+        and (s.status or "").strip().lower() != "header"
+    )
+
+
+def render_deliveries_tab(db, contracts, settlements):
     """Render the Deliveries tab.
 
-    Lets the user pick a calendar Year and Month (NOT crop year), then shows the
-    Active contracts whose delivery window overlaps that month, grouped by
-    commodity (normalized) and location (buyer name):
-      - a Summary table: commodity, location, total bushels (accumulated)
-      - per commodity+location: each contract's number, price, and bushels
+    Lets the user pick a calendar Year and Month (NOT crop year), then shows
+    contracts whose delivery window overlaps that month and whose fill status is
+    Open, Partial, Filled, or Over, grouped by commodity (normalized) and
+    location (buyer name):
+      - a Summary table: commodity, location, total/delivered/remaining bushels
+      - per commodity+location: each contract's number, status, price, and bushels
     """
     import calendar
 
@@ -575,15 +594,16 @@ def render_deliveries_tab(db, contracts):
     end_of_month = date(selected_year, selected_month, last_day)
 
     st.caption(
-        f"Active contracts delivering in {calendar.month_name[selected_month]} {selected_year} "
+        f"Contracts delivering in {calendar.month_name[selected_month]} {selected_year} "
         f"({start_of_month:%m/%d/%Y} \u2013 {end_of_month:%m/%d/%Y})"
     )
 
-    # Filter to Active contracts whose delivery window overlaps the selected month,
-    # then group by (commodity, location).
-    groups = {}  # (commodity, location) -> {"bushels": int, "rows": [..]}
+    # Filter to contracts whose delivery window overlaps the selected month and
+    # whose fill status is Open/Partial/Filled/Over, then group by (commodity, location).
+    groups = {}  # (commodity, location) -> totals + detail rows
     for c in contracts:
-        if (c.status or "").strip().lower() != "active":
+        fill_status = c.fill_status or "None"
+        if fill_status not in _DELIVERIES_FILL_STATUSES:
             continue
 
         eff_start = c.delivery_start or c.delivery_end
@@ -601,18 +621,30 @@ def render_deliveries_tab(db, contracts):
         commodity = normalize_commodity_name(db, c.commodity)
         location = normalize_vendor_name(db, c.buyer_name)  # roll up vendor spellings
         bushels = c.bushels or 0
+        delivered = _contract_delivered_bushels(c, settlements)
+        remaining = bushels - delivered
+        status_label = _deliveries_fill_status_label(fill_status)
 
-        group = groups.setdefault((commodity, location), {"bushels": 0, "rows": []})
-        group["bushels"] += bushels
+        group = groups.setdefault(
+            (commodity, location),
+            {"total_bushels": 0, "delivered": 0, "remaining": 0, "rows": []},
+        )
+        group["total_bushels"] += bushels
+        group["delivered"] += delivered
+        group["remaining"] += remaining
         group["rows"].append({
             "Contract #": c.contract_number or "",
+            "Status": status_label,
+            "_status_sort": _DELIVERIES_STATUS_SORT[status_label],
             "Price": f"${c.price:.2f}" if c.price is not None else "\u2014",
             "Bushels": f"{bushels:,}",
+            "Delivered": f"{delivered:,}",
+            "Remaining": f"{remaining:,}",
         })
 
     if not groups:
         st.info(
-            f"No active contracts deliver in {calendar.month_name[selected_month]} {selected_year}."
+            f"No contracts deliver in {calendar.month_name[selected_month]} {selected_year}."
         )
         return
 
@@ -624,7 +656,9 @@ def render_deliveries_tab(db, contracts):
         {
             "Commodity": commodity,
             "Location": location,
-            "Total Bushels": f"{groups[(commodity, location)]['bushels']:,}",
+            "Total Bushels": f"{groups[(commodity, location)]['total_bushels']:,}",
+            "Delivered": f"{groups[(commodity, location)]['delivered']:,}",
+            "Remaining": f"{groups[(commodity, location)]['remaining']:,}",
         }
         for (commodity, location) in ordered_keys
     ])
@@ -640,8 +674,18 @@ def render_deliveries_tab(db, contracts):
     available = set(list_available_contract_numbers()) if storage_available() else set()
     for (commodity, location) in ordered_keys:
         group = groups[(commodity, location)]
-        st.markdown(f"**{commodity} @ {location}** \u2014 {group['bushels']:,} bu")
-        detail_df = pd.DataFrame(group["rows"]).sort_values("Contract #").reset_index(drop=True)
+        st.markdown(
+            f"**{commodity} @ {location}** \u2014 "
+            f"{group['total_bushels']:,} bu total, "
+            f"{group['delivered']:,} delivered, "
+            f"{group['remaining']:,} remaining"
+        )
+        detail_df = (
+            pd.DataFrame(group["rows"])
+            .sort_values(["_status_sort", "Contract #"])
+            .drop(columns=["_status_sort"])
+            .reset_index(drop=True)
+        )
         detail_df["PDF"] = [
             signed_url_for_contract(cn) if cn in available else None
             for cn in detail_df["Contract #"]
@@ -752,7 +796,7 @@ def main():
     tab_deliveries, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚚 Deliveries", "🌾 Crop Year Sales", "📅 Deliveries by Month", "📦 Bins", "📦 Bins 3D", "📋 Contracts", "📥 Export"])
     
     with tab_deliveries:
-        render_deliveries_tab(db, all_contracts)
+        render_deliveries_tab(db, all_contracts, all_settlements)
     
     with tab1:
         st.subheader("Crop Year Sales")
