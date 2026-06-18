@@ -368,6 +368,15 @@ def _bin_metrics_label_text(metrics: dict) -> str:
     )
 
 
+def _bin_bar_label_yshifts(metrics_html: str) -> tuple:
+    """Return (bin_name_yshift, metrics_yshift) so the title sits above the metrics block."""
+    metrics_lines = metrics_html.count('<br>') + 1
+    line_height = 17
+    metrics_yshift = 12
+    name_yshift = metrics_yshift + (metrics_lines * line_height) + 14
+    return name_yshift, metrics_yshift
+
+
 def _availability_caption_text(label: str) -> str:
     return label.replace('\n', ' — ')
 
@@ -1844,25 +1853,29 @@ def main():
                     fig_bins, *, use_subplot_grid=False, row_num=1, col_num=1, label_slice=None
                 ):
                     indices = label_slice if label_slice is not None else range(len(bin_labels))
+                    max_name_yshift = 95
                     for i in indices:
                         total_y = reference_heights[i]
+                        metrics_html = _bin_metrics_label_text(metrics_list[i])
+                        name_yshift, metrics_yshift = _bin_bar_label_yshifts(metrics_html)
+                        max_name_yshift = max(max_name_yshift, name_yshift)
                         name_ann = dict(
                             x=bin_labels[i],
                             y=total_y,
                             text=_short_bin_title(bin_labels[i]),
                             showarrow=False,
                             yanchor="bottom",
-                            yshift=78,
+                            yshift=name_yshift,
                             xanchor="center",
                             font=dict(size=15, color="black", family="Arial Black"),
                         )
                         metrics_ann = dict(
                             x=bin_labels[i],
                             y=total_y,
-                            text=_bin_metrics_label_text(metrics_list[i]),
+                            text=metrics_html,
                             showarrow=False,
                             yanchor="bottom",
-                            yshift=12,
+                            yshift=metrics_yshift,
                             xanchor="center",
                             font=dict(size=13, color="black", family="Arial Black"),
                         )
@@ -1871,6 +1884,7 @@ def main():
                                 fig_bins.add_annotation(row=row_num, col=col_num, **ann)
                             else:
                                 fig_bins.add_annotation(**ann)
+                    return max_name_yshift + 45
                 
                 # Create subplots if multiple rows needed, otherwise single figure
                 if num_rows > 1:
@@ -1884,6 +1898,7 @@ def main():
                     )
                     
                     # Add bars for each row
+                    chart_top_margin = 140
                     for row_idx in range(num_rows):
                         start_idx = row_idx * bins_per_row
                         end_idx = min(start_idx + bins_per_row, len(bin_labels))
@@ -1907,12 +1922,15 @@ def main():
                                 subplot_row=row_idx + 1,
                                 subplot_col=1,
                             )
-                            _add_bar_top_annotations(
-                                fig_bins,
-                                use_subplot_grid=True,
-                                row_num=row_idx + 1,
-                                col_num=1,
-                                label_slice=range(start_idx, end_idx),
+                            chart_top_margin = max(
+                                chart_top_margin,
+                                _add_bar_top_annotations(
+                                    fig_bins,
+                                    use_subplot_grid=True,
+                                    row_num=row_idx + 1,
+                                    col_num=1,
+                                    label_slice=range(start_idx, end_idx),
+                                ),
                             )
                     
                     # Update layout
@@ -1921,7 +1939,7 @@ def main():
                         barmode='stack',
                         hovermode='x unified',
                         height=350 * num_rows,  # Adjust height based on number of rows
-                        margin=dict(t=130, b=20),
+                        margin=dict(t=chart_top_margin, b=20),
                         legend=dict(
                             traceorder='normal',
                             yanchor="top",
@@ -2007,9 +2025,9 @@ def main():
                             x=1.01
                         ),
                         bargap=gap_size,  # Larger gap for fewer bins to prevent fat bars
-                        margin=dict(t=130, b=20),
                     )
-                    _add_bar_top_annotations(fig_bins)
+                    chart_top_margin = _add_bar_top_annotations(fig_bins)
+                    fig_bins.update_layout(margin=dict(t=chart_top_margin, b=20))
                 
                 st.plotly_chart(fig_bins, width='stretch')
                 _render_bin_availability_captions(availability_labels)
