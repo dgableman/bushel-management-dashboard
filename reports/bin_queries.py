@@ -3,13 +3,17 @@ Bin and storage-related read-only queries.
 Includes functions for grouping bins by crop or location.
 """
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 from typing import List, Optional, Dict, Tuple
 from database.models import BinName, CropStorage, Contract, Settlement
 from reports.commodity_utils import normalize_commodity_name
 from reports.crop_year_utils import (
     calculate_partial_contract_remaining,
     is_date_in_crop_year,
+)
+from reports.bin_storage_metrics import (
+    preferred_crop_storage_rows,
+    allocate_open_contract_bushels_by_bin_key,
+    get_bin_storage_metrics as _shared_bin_storage_metrics,
 )
 
 
@@ -20,6 +24,16 @@ def get_all_bin_names(db: Session) -> List[BinName]:
     except Exception:
         # bin_names table may not exist in all databases
         return []
+
+
+def _bin_names_lookup(bin_names: List[BinName]) -> Dict[Tuple[str, str], BinName]:
+    lookup: Dict[Tuple[str, str], BinName] = {}
+    for bin_obj in bin_names:
+        lookup[(bin_obj.location, bin_obj.bin_name)] = bin_obj
+        if bin_obj.location and bin_obj.bin_name:
+            stripped = (str(bin_obj.location).strip(), str(bin_obj.bin_name).strip())
+            lookup.setdefault(stripped, bin_obj)
+    return lookup
 
 
 def get_crop_storage_for_year(db: Session, crop_year: int) -> List[CropStorage]:
@@ -44,34 +58,40 @@ def get_bins_with_storage_by_crop(db: Session, crop_year: int, include_empty: bo
     """
     try:
         bin_names = get_all_bin_names(db)
-        crop_storage_list = get_crop_storage_for_year(db, crop_year)
-        
-        # Create a lookup dict for crop_storage by location+bin_name
-        storage_lookup = {}
-        for cs in crop_storage_list:
-            key = (cs.location, cs.bin_name)
-            storage_lookup[key] = cs
-        
-        # Group bins by crop from crop_storage
+        crop_storage_list = preferred_crop_storage_rows(
+            get_crop_storage_for_year(db, crop_year)
+        )
+        bin_lookup = _bin_names_lookup(bin_names)
+
         bins_by_crop: Dict[str, List[Tuple[BinName, Optional[CropStorage]]]] = {}
-        
-        for bin_name in bin_names:
-            key = (bin_name.location, bin_name.bin_name)
-            if key in storage_lookup:
-                crop_storage = storage_lookup[key]
-                crop = crop_storage.crop
-                if crop not in bins_by_crop:
-                    bins_by_crop[crop] = []
-                bins_by_crop[crop].append((bin_name, crop_storage))
-            elif include_empty:
-                # If include_empty is True and bin doesn't have storage, we need to determine crop
-                # For bins without storage, we could use preferred_crop from bin_name if available
-                # Or create an "Unknown" category
-                crop = bin_name.preferred_crop if hasattr(bin_name, 'preferred_crop') and bin_name.preferred_crop else 'Unknown'
-                if crop not in bins_by_crop:
-                    bins_by_crop[crop] = []
-                bins_by_crop[crop].append((bin_name, None))
-        
+        bins_with_storage = set()
+
+        for cs in crop_storage_list:
+            crop = cs.crop
+            if not crop:
+                continue
+            bin_obj = bin_lookup.get((cs.location, cs.bin_name))
+            if bin_obj is None and cs.location and cs.bin_name:
+                bin_obj = bin_lookup.get(
+                    (str(cs.location).strip(), str(cs.bin_name).strip())
+                )
+            if bin_obj is None:
+                continue
+            bins_with_storage.add((bin_obj.location, bin_obj.bin_name))
+            bins_by_crop.setdefault(crop, []).append((bin_obj, cs))
+
+        if include_empty:
+            for bin_obj in bin_names:
+                key = (bin_obj.location, bin_obj.bin_name)
+                if key in bins_with_storage:
+                    continue
+                crop = (
+                    bin_obj.preferred_crop
+                    if hasattr(bin_obj, "preferred_crop") and bin_obj.preferred_crop
+                    else "Unknown"
+                )
+                bins_by_crop.setdefault(crop, []).append((bin_obj, None))
+
         return bins_by_crop
     except Exception:
         return {}
@@ -91,50 +111,37 @@ def get_bins_with_storage_by_location(db: Session, crop_year: int, include_empty
     """
     try:
         bin_names = get_all_bin_names(db)
-        crop_storage_list = get_crop_storage_for_year(db, crop_year)
-        
-        # Create a lookup dict for crop_storage by location+bin_name
-        # Use multiple keys to handle potential variations in location/bin_name matching
-        storage_lookup = {}
-        for cs in crop_storage_list:
-            # Primary key: location and bin_name from crop_storage
-            key1 = (cs.location, cs.bin_name)
-            storage_lookup[key1] = cs
-            
-            # Also try with bin_name from bin_names table for matching
-            # (in case there are slight differences)
-            if cs.location and cs.bin_name:
-                key2 = (str(cs.location).strip(), str(cs.bin_name).strip())
-                if key2 not in storage_lookup:
-                    storage_lookup[key2] = cs
-        
-        # Group bins by location from bin_names
+        crop_storage_list = preferred_crop_storage_rows(
+            get_crop_storage_for_year(db, crop_year)
+        )
+        bin_lookup = _bin_names_lookup(bin_names)
+
         bins_by_location: Dict[str, List[Tuple[BinName, Optional[CropStorage]]]] = {}
-        
-        for bin_name in bin_names:
-            if not bin_name.location:
-                continue  # Skip bins without a location
-                
-            # Try to match bin with storage record
-            location = str(bin_name.location).strip()
-            bin_name_str = str(bin_name.bin_name).strip() if bin_name.bin_name else ""
-            
-            # Try multiple key variations for matching
-            key1 = (bin_name.location, bin_name.bin_name)
-            key2 = (location, bin_name_str)
-            
-            crop_storage = None
-            if key1 in storage_lookup:
-                crop_storage = storage_lookup[key1]
-            elif key2 in storage_lookup:
-                crop_storage = storage_lookup[key2]
-            
-            # Include bin if: has storage OR include_empty is True
-            if crop_storage or include_empty:
-                if location not in bins_by_location:
-                    bins_by_location[location] = []
-                bins_by_location[location].append((bin_name, crop_storage))
-        
+
+        for cs in crop_storage_list:
+            location = str(cs.location).strip() if cs.location else ""
+            if not location:
+                continue
+            bin_obj = bin_lookup.get((cs.location, cs.bin_name))
+            if bin_obj is None and cs.bin_name:
+                bin_obj = bin_lookup.get((location, str(cs.bin_name).strip()))
+            if bin_obj is None:
+                continue
+            bins_by_location.setdefault(location, []).append((bin_obj, cs))
+
+        if include_empty:
+            for bin_obj in bin_names:
+                if not bin_obj.location:
+                    continue
+                location = str(bin_obj.location).strip()
+                has_storage = any(
+                    entry[0].location == bin_obj.location
+                    and entry[0].bin_name == bin_obj.bin_name
+                    for entry in bins_by_location.get(location, [])
+                )
+                if not has_storage:
+                    bins_by_location.setdefault(location, []).append((bin_obj, None))
+
         return bins_by_location
     except Exception as e:
         # Log error for debugging but return empty dict
@@ -184,32 +191,14 @@ def build_open_contract_allocation_by_bin(
     storage_entries: Optional[List[CropStorage]] = None,
 ) -> Dict[Tuple[str, str, str], int]:
     """
-    Allocate crop-level open/partial contract bushels to bins by contracted_bushels share.
-    Key: (location, bin_name, crop).
+    Allocate crop-level open/partial contract bushels to Actual storage rows by
+    contracted_bushels share. Key: (location, bin_name, crop).
     """
     if storage_entries is None:
         storage_entries = get_crop_storage_for_year(db, crop_year)
 
     open_by_crop = get_open_contract_bushels_by_crop(db, crop_year)
-    assigned_by_crop: Dict[str, int] = {}
-    for entry in storage_entries:
-        crop = entry.crop or "Unknown"
-        assigned_by_crop[crop] = assigned_by_crop.get(crop, 0) + int(
-            getattr(entry, "contracted_bushels", 0) or 0
-        )
-
-    allocation: Dict[Tuple[str, str, str], int] = {}
-    for entry in storage_entries:
-        crop = entry.crop or "Unknown"
-        key = (entry.location or "", entry.bin_name or "", crop)
-        open_total = open_by_crop.get(crop, 0)
-        assigned_total = assigned_by_crop.get(crop, 0)
-        contracted = int(getattr(entry, "contracted_bushels", 0) or 0)
-        if assigned_total > 0 and contracted > 0:
-            allocation[key] = int(round(open_total * contracted / assigned_total))
-        else:
-            allocation[key] = 0
-    return allocation
+    return allocate_open_contract_bushels_by_bin_key(storage_entries, open_by_crop)
 
 
 def get_bin_storage_metrics(
@@ -217,93 +206,8 @@ def get_bin_storage_metrics(
     bin_name,
     open_contract_bushels: float = 0,
 ) -> dict:
-    """
-    Bushel metrics for bin charts using non-overlapping segments.
-
-    Reference height: bin capacity (finite) or initial fill (unlimited).
-    Stack (bottom to top): settled, open contracts, not sold in-bin, empty space.
-    """
+    """Bushel metrics for bin charts; delegates to shared bin_storage_metrics."""
     capacity = int(bin_name.capacity or 0) if bin_name else 0
-    is_unlimited = capacity == 0
-
-    if crop_storage is None:
-        reference = float(capacity) if capacity > 0 else 1.0
-        return {
-            'current': 0.0,
-            'initial': 0.0,
-            'settled': 0.0,
-            'contracted': 0.0,
-            'contracted_raw': 0.0,
-            'open_contracts': 0.0,
-            'not_sold': 0.0,
-            'capacity': float(capacity),
-            'is_unlimited': is_unlimited,
-            'reference': reference,
-            'chart_settled': 0.0,
-            'chart_contracted': 0.0,
-            'chart_not_sold': 0.0,
-            'chart_uncontracted': 0.0,
-            'chart_empty': reference,
-            'empty_uses_settled_color': True,
-            'not_sold_market': 0.0,
-            'available_to_market': 0.0,
-            'available_pct': 0.0,
-            'over_contracted': 0.0,
-            'is_empty_bin': True,
-            'availability_label': 'Empty bin',
-        }
-
-    current = int(getattr(crop_storage, 'current_content', 0) or 0)
-    initial = int(getattr(crop_storage, 'initial_content', 0) or 0)
-    settled = int(getattr(crop_storage, 'settled_bushels', 0) or 0)
-    bin_contracted_assigned = int(getattr(crop_storage, 'contracted_bushels', 0) or 0)
-    open_contracts = float(max(0, open_contract_bushels))
-
-    if is_unlimited:
-        reference = float(max(initial, settled + current, 1))
-    else:
-        reference = float(capacity)
-
-    contracted_chart = float(min(open_contracts, max(current, 0)))
-    over_contracted = float(max(0, open_contracts - current))
-    not_sold = float(max(0, initial - settled - open_contracts))
-    chart_not_sold = float(max(0, current - contracted_chart))
-    chart_settled = float(settled)
-    chart_empty = float(max(0.0, reference - settled - current))
-
-    not_sold_pct = (not_sold / reference * 100.0) if reference > 0 else 0.0
-
-    if current == 0 and settled > 0 and chart_empty <= 0:
-        availability_label = 'Empty — all settled'
-    elif over_contracted > 0:
-        availability_label = (
-            f'Not sold: {not_sold:,.0f} bu ({not_sold_pct:.0f}%)\n'
-            f'Over-contracted: {over_contracted:,.0f} bu'
-        )
-    else:
-        availability_label = f'Not sold: {not_sold:,.0f} bu ({not_sold_pct:.0f}%)'
-
-    return {
-        'current': float(current),
-        'initial': float(initial),
-        'settled': float(settled),
-        'contracted': contracted_chart,
-        'contracted_raw': float(bin_contracted_assigned),
-        'open_contracts': open_contracts,
-        'not_sold': not_sold,
-        'capacity': float(capacity),
-        'is_unlimited': is_unlimited,
-        'reference': reference,
-        'chart_settled': chart_settled,
-        'chart_contracted': contracted_chart,
-        'chart_not_sold': chart_not_sold,
-        'chart_uncontracted': chart_not_sold,
-        'chart_empty': chart_empty,
-        'empty_uses_settled_color': False,
-        'not_sold_market': not_sold,
-        'available_to_market': not_sold,
-        'available_pct': not_sold_pct,
-        'over_contracted': over_contracted,
-        'is_empty_bin': False,
-        'availability_label': availability_label,
-    }
+    return _shared_bin_storage_metrics(
+        crop_storage, capacity=capacity, open_contract_bushels=open_contract_bushels
+    )
